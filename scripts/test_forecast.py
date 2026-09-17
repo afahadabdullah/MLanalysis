@@ -147,9 +147,18 @@ with_configs = functools.partial(
     t_cfg=task_config,
 )
 
-run_forward_jitted = jax.jit(
+_run_forward_jitted = jax.jit(
     functools.partial(with_configs, params=params, state=state)
 )
+
+# rollout.chunked_prediction expects fn to return an xarray Dataset,
+# but hk.transform_with_state returns (predictions, state). Drop the state.
+def run_forward_jitted(rng, inputs, targets_template, forcings):
+    predictions, _state = _run_forward_jitted(
+        rng=rng, inputs=inputs, targets_template=targets_template, forcings=forcings
+    )
+    return predictions
+
 
 print(f"\n[5/5] Running {STEPS}-step ({STEPS * 6}h) forecast rollout on GPU ...")
 t_start = time.time()
