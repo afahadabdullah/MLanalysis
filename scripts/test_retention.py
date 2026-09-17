@@ -486,6 +486,214 @@ if "10m_u_component_of_wind" in diff_ds and "mean_sea_level_pressure" in diff_ds
     plt.close(fig)
     print(f"  ✓ {os.path.basename(p4)}")
 
+# ===========================================================================
+# Plot 5: Side-by-Side 4-Panel Sensitivity Comparison (Baseline | Perturbed | Truth | Sensitivity Δ)
+# ===========================================================================
+print("\n--- Generating Side-by-Side Sensitivity Comparisons ---")
+for step_idx in range(n_steps):
+    hours = (step_idx + 1) * 6
+    fc_base = preds_base["2m_temperature"].isel(time=step_idx).values.squeeze()
+    fc_pert = preds_pert["2m_temperature"].isel(time=step_idx).values.squeeze()
+    tr_t2m = eval_targets["2m_temperature"].isel(time=step_idx).values.squeeze()
+    diff_t2m = diff_ds["2m_temperature"].isel(time=step_idx).values.squeeze()
+    
+    fig, axes = plt.subplots(1, 4, figsize=(20, 4.5),
+                             subplot_kw={"projection": ccrs.PlateCarree()} if HAS_CARTOPY else {})
+    
+    # Common color scale for fields
+    vmin_f = min(np.nanmin(fc_base), np.nanmin(tr_t2m))
+    vmax_f = max(np.nanmax(fc_base), np.nanmax(tr_t2m))
+    
+    # 1. Baseline Forecast
+    im0 = axes[0].pcolormesh(lons, lats, fc_base, cmap="RdYlBu_r", vmin=vmin_f, vmax=vmax_f,
+                             transform=ccrs.PlateCarree() if HAS_CARTOPY else None)
+    axes[0].set_title(f"Baseline Forecast (+{hours}h)", fontsize=10, fontweight="bold")
+    if HAS_CARTOPY:
+        axes[0].set_extent(extent, crs=ccrs.PlateCarree())
+        add_map_elements(axes[0])
+    plt.colorbar(im0, ax=axes[0], shrink=0.7, label="K")
+    
+    # 2. Perturbed Forecast
+    im1 = axes[1].pcolormesh(lons, lats, fc_pert, cmap="RdYlBu_r", vmin=vmin_f, vmax=vmax_f,
+                             transform=ccrs.PlateCarree() if HAS_CARTOPY else None)
+    axes[1].set_title(f"Perturbed Forecast (+{hours}h)", fontsize=10, fontweight="bold")
+    if HAS_CARTOPY:
+        axes[1].set_extent(extent, crs=ccrs.PlateCarree())
+        add_map_elements(axes[1])
+    plt.colorbar(im1, ax=axes[1], shrink=0.7, label="K")
+    
+    # 3. ERA5 Truth
+    im2 = axes[2].pcolormesh(lons, lats, tr_t2m, cmap="RdYlBu_r", vmin=vmin_f, vmax=vmax_f,
+                             transform=ccrs.PlateCarree() if HAS_CARTOPY else None)
+    axes[2].set_title(f"ERA5 Truth (+{hours}h)", fontsize=10, fontweight="bold")
+    if HAS_CARTOPY:
+        axes[2].set_extent(extent, crs=ccrs.PlateCarree())
+        add_map_elements(axes[2])
+    plt.colorbar(im2, ax=axes[2], shrink=0.7, label="K")
+    
+    # 4. Pure Sensitivity Difference (ΔF = Perturbed - Baseline)
+    emax = max(0.2, np.max(np.abs(diff_t2m)))
+    im3 = axes[3].pcolormesh(lons, lats, diff_t2m, cmap="RdBu_r", vmin=-emax, vmax=emax,
+                             transform=ccrs.PlateCarree() if HAS_CARTOPY else None)
+    axes[3].set_title(f"Sensitivity ΔT2m (Pert - Base)", fontsize=10, fontweight="bold")
+    if HAS_CARTOPY:
+        axes[3].set_extent(extent, crs=ccrs.PlateCarree())
+        add_map_elements(axes[3])
+    plt.colorbar(im3, ax=axes[3], shrink=0.7, label="K")
+    
+    fig.suptitle(f"2m Temperature Sensitivity & Verification (+{hours}h)", fontsize=13, fontweight="bold", y=1.02)
+    fig.tight_layout()
+    p5 = os.path.join(OUTDIR, f"sensitivity_quad_comparison_step{step_idx}.png")
+    fig.savefig(p5, dpi=args.dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ✓ {os.path.basename(p5)}")
+
+# ===========================================================================
+# Plot 6: Forecast Error Impact vs. Truth (|Pert - Truth| - |Base - Truth|)
+# ===========================================================================
+print("\n--- Generating Forecast Error Impact Maps ---")
+for step_idx in range(n_steps):
+    hours = (step_idx + 1) * 6
+    fc_base = preds_base["2m_temperature"].isel(time=step_idx).values.squeeze()
+    fc_pert = preds_pert["2m_temperature"].isel(time=step_idx).values.squeeze()
+    tr_t2m = eval_targets["2m_temperature"].isel(time=step_idx).values.squeeze()
+    
+    err_base = np.abs(fc_base - tr_t2m)
+    err_pert = np.abs(fc_pert - tr_t2m)
+    # Negative = perturbation improved forecast; Positive = perturbation degraded forecast
+    err_delta = err_pert - err_base
+    
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5),
+                             subplot_kw={"projection": ccrs.PlateCarree()} if HAS_CARTOPY else {})
+    
+    vmax_err = max(np.percentile(err_base, 99), np.percentile(err_pert, 99))
+    
+    # Base error
+    im0 = axes[0].pcolormesh(lons, lats, err_base, cmap="YlOrRd", vmin=0, vmax=vmax_err,
+                             transform=ccrs.PlateCarree() if HAS_CARTOPY else None)
+    axes[0].set_title(f"Baseline Absolute Error (+{hours}h)", fontsize=10, fontweight="bold")
+    if HAS_CARTOPY:
+        axes[0].set_extent(extent, crs=ccrs.PlateCarree())
+        add_map_elements(axes[0])
+    plt.colorbar(im0, ax=axes[0], shrink=0.7, label="K")
+    
+    # Perturbed error
+    im1 = axes[1].pcolormesh(lons, lats, err_pert, cmap="YlOrRd", vmin=0, vmax=vmax_err,
+                             transform=ccrs.PlateCarree() if HAS_CARTOPY else None)
+    axes[1].set_title(f"Perturbed Absolute Error (+{hours}h)", fontsize=10, fontweight="bold")
+    if HAS_CARTOPY:
+        axes[1].set_extent(extent, crs=ccrs.PlateCarree())
+        add_map_elements(axes[1])
+    plt.colorbar(im1, ax=axes[1], shrink=0.7, label="K")
+    
+    # Error Impact Delta (Blue = Improved, Red = Degraded)
+    dmax = max(0.2, np.percentile(np.abs(err_delta), 99))
+    im2 = axes[2].pcolormesh(lons, lats, err_delta, cmap="RdBu", vmin=-dmax, vmax=dmax,
+                             transform=ccrs.PlateCarree() if HAS_CARTOPY else None)
+    axes[2].set_title(f"Impact: |Pert Error| - |Base Error|\n(Blue=Improved, Red=Degraded)",
+                      fontsize=10, fontweight="bold")
+    if HAS_CARTOPY:
+        axes[2].set_extent(extent, crs=ccrs.PlateCarree())
+        add_map_elements(axes[2])
+    plt.colorbar(im2, ax=axes[2], shrink=0.7, label="Δ Error (K)")
+    
+    fig.suptitle(f"Verification Impact of Surface Perturbation (+{hours}h)", fontsize=13, fontweight="bold", y=1.02)
+    fig.tight_layout()
+    p6 = os.path.join(OUTDIR, f"forecast_error_impact_step{step_idx}.png")
+    fig.savefig(p6, dpi=args.dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ✓ {os.path.basename(p6)}")
+
+# ===========================================================================
+# Plot 7: CONUS vs. Global RMSE Impact Curves
+# ===========================================================================
+print("\n--- Generating CONUS vs. Global RMSE Comparison Curve ---")
+# Mask CONUS: lat 25 to 50, lon 235 to 290
+conus_mask = (lats[:, np.newaxis] >= 25) & (lats[:, np.newaxis] <= 50) & (lons[np.newaxis, :] >= 235) & (lons[np.newaxis, :] <= 290)
+weights_2d = weights * np.ones_like(lon_grid)
+
+rmse_base_conus = []
+rmse_pert_conus = []
+rmse_base_global = []
+rmse_pert_global = []
+
+for s in range(n_steps):
+    fc_b = preds_base["2m_temperature"].isel(time=s).values.squeeze()
+    fc_p = preds_pert["2m_temperature"].isel(time=s).values.squeeze()
+    tr = eval_targets["2m_temperature"].isel(time=s).values.squeeze()
+    
+    # CONUS RMSE
+    eb_c = (fc_b - tr)[conus_mask]
+    ep_c = (fc_p - tr)[conus_mask]
+    w_c = weights_2d[conus_mask]
+    rmse_base_conus.append(float(np.sqrt(np.sum(w_c * eb_c**2) / np.sum(w_c))))
+    rmse_pert_conus.append(float(np.sqrt(np.sum(w_c * ep_c**2) / np.sum(w_c))))
+    
+    # Global RMSE
+    eb_g = fc_b - tr
+    ep_g = fc_p - tr
+    rmse_base_global.append(float(np.sqrt(np.sum(weights_2d * eb_g**2) / np.sum(weights_2d))))
+    rmse_pert_global.append(float(np.sqrt(np.sum(weights_2d * ep_g**2) / np.sum(weights_2d))))
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+# CONUS
+axes[0].plot(lead_hours, rmse_base_conus, "o-", color="#1f77b4", label="Baseline (ERA5)", linewidth=2)
+axes[0].plot(lead_hours, rmse_pert_conus, "s--", color="#d62728", label=f"Perturbed (ΔT2m={args.amplitude:+.1f}K)", linewidth=2)
+axes[0].set_title("CONUS 2m Temperature RMSE", fontsize=11, fontweight="bold")
+axes[0].set_xlabel("Lead Time (hours)", fontsize=10)
+axes[0].set_ylabel("RMSE (K)", fontsize=10)
+axes[0].set_xticks(lead_hours)
+axes[0].grid(True, alpha=0.4)
+axes[0].legend(fontsize=10)
+
+# Global
+axes[1].plot(lead_hours, rmse_base_global, "o-", color="#1f77b4", label="Baseline (ERA5)", linewidth=2)
+axes[1].plot(lead_hours, rmse_pert_global, "s--", color="#d62728", label=f"Perturbed (ΔT2m={args.amplitude:+.1f}K)", linewidth=2)
+axes[1].set_title("Global 2m Temperature RMSE", fontsize=11, fontweight="bold")
+axes[1].set_xlabel("Lead Time (hours)", fontsize=10)
+axes[1].set_ylabel("RMSE (K)", fontsize=10)
+axes[1].set_xticks(lead_hours)
+axes[1].grid(True, alpha=0.4)
+axes[1].legend(fontsize=10)
+
+fig.suptitle("Forecast Accuracy Impact of Surface Perturbation", fontsize=13, fontweight="bold")
+fig.tight_layout()
+p7 = os.path.join(OUTDIR, "rmse_sensitivity_impact.png")
+fig.savefig(p7, dpi=args.dpi)
+plt.close(fig)
+print(f"  ✓ {os.path.basename(p7)}")
+
+# ===========================================================================
+# Plot 8: Multivariable Sensitivity Response Bar Chart
+# ===========================================================================
+print("\n--- Generating Multivariable Sensitivity Response Summary ---")
+sens_summary = {}
+for var in sorted(diff_ds.data_vars.keys()):
+    try:
+        val = np.abs(diff_ds[var].values)
+        sens_summary[var] = float(np.nanmax(val))
+    except Exception:
+        pass
+
+if sens_summary:
+    fig, ax = plt.subplots(figsize=(10, 5))
+    v_names = list(sens_summary.keys())
+    v_vals = [sens_summary[v] for v in v_names]
+    ax.barh(v_names, v_vals, color="#3b528b")
+    ax.set_xlabel("Peak Absolute Perturbation Response: max |F_pert - F_base|")
+    ax.set_title("Multivariable Model Sensitivity to Surface ΔT2m Injection", fontsize=12, fontweight="bold")
+    ax.invert_yaxis()
+    for bar, val in zip(ax.patches, v_vals):
+        ax.text(bar.get_width() * 1.02, bar.get_y() + bar.get_height() / 2,
+                f"{val:.4f}", va="center", fontsize=8)
+    fig.tight_layout()
+    p8 = os.path.join(OUTDIR, "multivariable_sensitivity_summary.png")
+    fig.savefig(p8, dpi=args.dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ✓ {os.path.basename(p8)}")
+
+n_plots = len([f for f in os.listdir(OUTDIR) if f.endswith(".png")])
 print("\n" + "=" * 65)
-print(f"Experiment complete! All figures saved in:\n  {OUTDIR}/")
+print(f"Experiment complete! {n_plots} diagnostic figures saved in:\n  {OUTDIR}/")
 print("=" * 65)
+
