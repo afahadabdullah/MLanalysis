@@ -89,9 +89,20 @@ python -c "import jax; print(jax.devices())"   # must list a CUDA device here
 ```
 
 ## 6. Reproduce the official example (the real milestone)
-1. Run the GraphCast demo notebook logic as a script, on the downloaded 1° sample, for a few steps.
-2. Save the output and confirm it matches the packaged example within numerical tolerance.
-3. **Only then** feed your own ERA5-derived inputs, and check that your adapter reproduces the same forecast from equivalent physical data.
+
+Run the test forecast script on the GPU node:
+
+```bash
+python scripts/test_forecast.py
+```
+
+This script:
+1. Loads the downloaded `GraphCast_small` checkpoint (13 levels, 1° resolution).
+2. Loads normalization stats and the 1° official sample dataset.
+3. Compiles the forward pass (`run_forward_jitted`) and executes a 2-step (12 h) autoregressive rollout on the GPU.
+4. Validates that predicted fields (e.g., `2m_temperature`) are physically reasonable and contains no NaNs.
+5. Logs execution metrics and GPU timing to `runs/test_forecast_summary.txt`.
+
 
 ## 7. Benchmark before planning any run count
 Record, for one 5-day forecast (20 steps):

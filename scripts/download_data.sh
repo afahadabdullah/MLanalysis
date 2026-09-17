@@ -1,37 +1,47 @@
 #!/bin/bash
-# Download GraphCast_small weights, normalization stats, and one official sample
+# Download GraphCast_small weights, normalization stats, and official sample dataset
 # into the repo's data/ directory. Run on the LOGIN node (compute nodes may have no internet).
 set -euo pipefail
 PROJ="${PROJ:-/home/afahad/project/MLanalysis}"
-cd "$PROJ/data"
+DATA_DIR="$PROJ/data"
 BASE="https://storage.googleapis.com/dm_graphcast"
 
-echo "== listing available checkpoints (pick the GraphCast_small one) =="
-python - <<'PY'
-import gcsfs
-fs = gcsfs.GCSFileSystem(token='anon')
-for f in fs.ls('dm_graphcast/params'):
-    if 'small' in f.lower():
-        print(f)
-print('--- stats ---')
-print(*fs.ls('dm_graphcast/stats'), sep='\n')
-print('--- sample datasets (1.0 deg, 13 levels) ---')
-for f in fs.ls('dm_graphcast/dataset'):
-    if 'res-1.0' in f and 'levels-13' in f:
-        print(f)
-PY
+mkdir -p "$DATA_DIR"/{params,stats,sample}
 
-cat <<'MSG'
+echo "=== [1/3] Downloading GraphCast_small Checkpoint ==="
+PARAM_FILE="GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - mesh 2to5 - precipitation input and output.npz"
+if [ ! -f "$DATA_DIR/params/$PARAM_FILE" ]; then
+    echo "Downloading weights (~330 MB) ..."
+    wget -c -O "$DATA_DIR/params/$PARAM_FILE" \
+      "$BASE/params/GraphCast_small%20-%20ERA5%201979-2015%20-%20resolution%201.0%20-%20pressure%20levels%2013%20-%20mesh%202to5%20-%20precipitation%20input%20and%20output.npz"
+else
+    echo "Params file already exists: $DATA_DIR/params/$PARAM_FILE"
+fi
 
-Now copy the exact names printed above into the wget lines below, e.g.:
+echo "=== [2/3] Downloading Normalization Statistics ==="
+for f in diffs_stddev_by_level.nc mean_by_level.nc stddev_by_level.nc; do
+    if [ ! -f "$DATA_DIR/stats/$f" ]; then
+        echo "Downloading stats/$f ..."
+        wget -c -O "$DATA_DIR/stats/$f" "$BASE/stats/$f"
+    else
+        echo "Stats file already exists: $DATA_DIR/stats/$f"
+    fi
+done
 
-  wget -P params "https://storage.googleapis.com/dm_graphcast/params/<exact-name>.npz"
-  for f in diffs_stddev_by_level.nc mean_by_level.nc stddev_by_level.nc; do
-      wget -P stats "https://storage.googleapis.com/dm_graphcast/stats/$f"
-  done
-  wget -P sample "https://storage.googleapis.com/dm_graphcast/dataset/<exact-sample>.nc"
+echo "=== [3/3] Downloading Sample Dataset (1.0 deg, 13 levels) ==="
+SAMPLE_FILE="dataset-source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc"
+if [ ! -f "$DATA_DIR/sample/$SAMPLE_FILE" ]; then
+    echo "Downloading sample dataset (~140 MB) ..."
+    wget -c -O "$DATA_DIR/sample/$SAMPLE_FILE" "$BASE/dataset/$SAMPLE_FILE"
+else
+    echo "Sample file already exists: $DATA_DIR/sample/$SAMPLE_FILE"
+fi
 
-Then pin the checkpoint:
-  sha256sum params/*.npz | tee params/CHECKSUMS.txt
-  date -u +%Y-%m-%dT%H:%M:%SZ >> params/CHECKSUMS.txt
-MSG
+echo "=== Generating Checksums ==="
+sha256sum "$DATA_DIR"/params/*.npz | tee "$DATA_DIR/params/CHECKSUMS.txt"
+date -u +%Y-%m-%dT%H:%M:%SZ >> "$DATA_DIR/params/CHECKSUMS.txt"
+
+echo
+echo "=== All data downloaded and verified successfully! ==="
+echo "You can now run a test forecast on a GPU node:"
+echo "  python scripts/test_forecast.py"
