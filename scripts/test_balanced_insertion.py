@@ -358,9 +358,9 @@ for s in range(n_steps):
     print(f"     CONUS RMSE: Base = {rmse_base_c[-1]:.3f} K | E-DIR = {rmse_dir_c[-1]:.3f} K | E-BAL = {rmse_bal_c[-1]:.3f} K")
 
 # Initialization Shock Proxy: First-step jump ||F(x0) - x0|| at step 0 (+6h)
-t2m_x0_b = eval_inputs["2m_temperature"].sel(time=t0_coord).values
-t2m_x0_d = eval_inputs_dir["2m_temperature"].sel(time=t0_coord).values
-t2m_x0_bal = eval_inputs_bal["2m_temperature"].sel(time=t0_coord).values
+t2m_x0_b = eval_inputs["2m_temperature"].sel(time=t0_coord).values.squeeze()
+t2m_x0_d = eval_inputs_dir["2m_temperature"].sel(time=t0_coord).values.squeeze()
+t2m_x0_bal = eval_inputs_bal["2m_temperature"].sel(time=t0_coord).values.squeeze()
 
 jump_base = np.sqrt(np.mean(((preds_base["2m_temperature"].isel(time=0).values.squeeze() - t2m_x0_b)[conus_mask])**2))
 jump_dir = np.sqrt(np.mean(((preds_dir["2m_temperature"].isel(time=0).values.squeeze() - t2m_x0_d)[conus_mask])**2))
@@ -372,9 +372,9 @@ print(f"  E-DIR jump:      {jump_dir:.4f} K  (Excess jump over base: {jump_dir -
 print(f"  E-BAL jump:      {jump_bal:.4f} K  (Excess jump over base: {jump_bal - jump_base:+.4f} K)")
 
 # Physical Inconsistency Metric: t0 Lapse Rate Anomaly (T2m - T1000)
-lapse_base = t2m_x0_b - eval_inputs["temperature"].sel(time=t0_coord, level=1000).values
-lapse_dir = t2m_x0_d - eval_inputs_dir["temperature"].sel(time=t0_coord, level=1000).values
-lapse_bal = t2m_x0_bal - eval_inputs_bal["temperature"].sel(time=t0_coord, level=1000).values
+lapse_base = (t2m_x0_b - eval_inputs["temperature"].sel(time=t0_coord, level=1000).values.squeeze())
+lapse_dir = (t2m_x0_d - eval_inputs_dir["temperature"].sel(time=t0_coord, level=1000).values.squeeze())
+lapse_bal = (t2m_x0_bal - eval_inputs_bal["temperature"].sel(time=t0_coord, level=1000).values.squeeze())
 
 print("\nPhysical Consistency at t0 (T2m - T1000 Lapse Rate Discrepancy at center):")
 lat_c_idx = np.argmin(np.abs(lats - args.lat))
@@ -382,6 +382,7 @@ lon_c_idx = np.argmin(np.abs(lons - args.lon))
 print(f"  Baseline lapse (T2m - T1000): {lapse_base[lat_c_idx, lon_c_idx]:+.2f} K")
 print(f"  E-DIR lapse (T2m - T1000):    {lapse_dir[lat_c_idx, lon_c_idx]:+.2f} K  (Unphysical super-adiabatic jump: {lapse_dir[lat_c_idx, lon_c_idx] - lapse_base[lat_c_idx, lon_c_idx]:+.2f} K)")
 print(f"  E-BAL lapse (T2m - T1000):    {lapse_bal[lat_c_idx, lon_c_idx]:+.2f} K  (Preserved lapse rate: {lapse_bal[lat_c_idx, lon_c_idx] - lapse_base[lat_c_idx, lon_c_idx]:+.2f} K)")
+
 
 # ---------------------------------------------------------------------------
 # 6. Diagnostic Visualizations
