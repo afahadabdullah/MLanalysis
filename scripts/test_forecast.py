@@ -45,8 +45,9 @@ STATS_DIR = os.path.join(DATA_DIR, "stats")
 SAMPLE_FILE = os.path.join(
     DATA_DIR,
     "sample",
-    "dataset-source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc",
+    "source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc",
 )
+
 
 # 1. Check prerequisites
 missing = []
@@ -92,7 +93,11 @@ print("      Stats loaded successfully.")
 # 4. Load sample batch and extract inputs, targets, forcings
 print(f"\n[3/5] Loading sample dataset: {os.path.basename(SAMPLE_FILE)} ...")
 with open(SAMPLE_FILE, "rb") as f:
-    example_batch = xr.load_dataset(f).compute()
+    try:
+        example_batch = xr.load_dataset(f, decode_timedelta=True).compute()
+    except Exception:
+        example_batch = xr.load_dataset(f).compute()
+
 
 # We test a 2-step forecast (2 x 6h = 12 hours)
 STEPS = 2

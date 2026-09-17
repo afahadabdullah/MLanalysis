@@ -29,13 +29,14 @@ for f in diffs_stddev_by_level.nc mean_by_level.nc stddev_by_level.nc; do
 done
 
 echo "=== [3/3] Downloading Sample Dataset (1.0 deg, 13 levels) ==="
-SAMPLE_FILE="dataset-source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc"
+SAMPLE_FILE="source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc"
 if [ ! -f "$DATA_DIR/sample/$SAMPLE_FILE" ]; then
-    echo "Downloading sample dataset (~140 MB) ..."
+    echo "Downloading sample dataset (~130 MB) ..."
     wget -c -O "$DATA_DIR/sample/$SAMPLE_FILE" "$BASE/dataset/$SAMPLE_FILE"
 else
     echo "Sample file already exists: $DATA_DIR/sample/$SAMPLE_FILE"
 fi
+
 
 echo "=== Generating Checksums ==="
 sha256sum "$DATA_DIR"/params/*.npz | tee "$DATA_DIR/params/CHECKSUMS.txt"
