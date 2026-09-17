@@ -20,10 +20,10 @@ ssh gpulogin1                        # Prism GPU login node
 
 ## 2. Everything lives in the repo
 
-The cloned repo is the project root:
+The project root is `/home/afahad/project/MLanalysis` (already hosted on `nobackup` and linked into `$HOME`):
 
 ```bash
-export PROJ=$HOME/project/MLanalysis     # /home/afahad/project/MLanalysis
+export PROJ=/home/afahad/project/MLanalysis
 cd $PROJ
 ```
 
@@ -31,38 +31,24 @@ Layout (created by `scripts/setup_env.sh`):
 
 ```text
 MLanalysis/
-  envs/gc/            conda environment (git-ignored)
-  .conda_pkgs/ .pip_cache/   caches, kept out of $HOME (git-ignored)
-  data/params  data/stats  data/sample       model weights + official example
-  data/era5  data/merra2  data/obs           inputs
-  runs/  results/  logs/                     outputs (git-ignored)
-  configs/  src/  scripts/                   code (committed)
+  envs/gc/                   conda environment (git-ignored)
+  .conda_pkgs/ .pip_cache/   caches, kept inside repo (git-ignored)
+  data/params  data/stats    model weights + official example
+  data/era5  data/merra2     inputs
+  runs/  results/  logs/     outputs (git-ignored)
+  configs/  src/  scripts/   code (committed)
 ```
 
-`.gitignore` already excludes `envs/`, caches, `data/`, `runs/`, and logs, so only code and documents are committed.
+`.gitignore` excludes `envs/`, caches, `data/`, `runs/`, and logs, so only code and documentation are committed.
 
-**Quota warning.** This puts the environment (several GB) and all data under `$HOME`. Check your home quota first:
+**Storage note:** Because `/home/afahad/project/MLanalysis` is physically located on `nobackup`, all environments, large model weights, intermediate arrays, and forecast runs sit directly inside `/home/afahad/project/MLanalysis` without risking `$HOME` quotas. No separate symlinks to `nobackup` are needed.
 
-```bash
-showquota 2>/dev/null || quota -s
-du -sh $PROJ
-```
-
-If home is tight, keep the layout but point the heavy directories at `nobackup` with symlinks, so paths in the code never change:
-
-```bash
-NB=/explore/nobackup/people/$USER/mlanalysis    # verify this path for your account
-mkdir -p $NB/{data,runs,envs}
-mv $PROJ/data $NB/ 2>/dev/null || true
-ln -s $NB/data $PROJ/data
-ln -s $NB/runs $PROJ/runs
-```
 
 ## 3. Build the environment (login node, needs internet)
 
 ```bash
 ssh adapt.nccs.nasa.gov     # then: ssh gpulogin1
-cd $HOME/project/MLanalysis
+cd /home/afahad/project/MLanalysis
 bash scripts/setup_env.sh
 ```
 
@@ -70,7 +56,7 @@ The script creates `envs/gc` with Python 3.11, JAX (CUDA 12), GraphCast and the 
 
 ```bash
 module load miniforge
-source activate $HOME/project/MLanalysis/envs/gc
+source activate /home/afahad/project/MLanalysis/envs/gc
 ```
 
 On the login node `jax.devices()` shows CPU only. That is expected.
@@ -127,8 +113,9 @@ Roughly 2,000 five-day forecasts are planned, so per-forecast cost decides wheth
 #SBATCH --mem=64G
 #SBATCH -t 04:00:00
 #SBATCH -o %x_%j.out
+export PROJ=/home/afahad/project/MLanalysis
 module load miniforge
-source activate $HOME/project/MLanalysis/envs/gc
+source activate $PROJ/envs/gc
 export XLA_PYTHON_CLIENT_PREALLOCATE=false      # avoids JAX grabbing the whole GPU
 cd $PROJ
 srun python src/run.py --config configs/config.yaml --dates $DATE_LIST --treatments E,M,E-DIR,E-BAL,E-NUD

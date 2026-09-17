@@ -4,7 +4,7 @@
 #   ssh adapt.nccs.nasa.gov -> ssh gpulogin1 -> cd ~/project/MLanalysis && bash scripts/setup_env.sh
 set -euo pipefail
 
-PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJ="${PROJ:-/home/afahad/project/MLanalysis}"
 echo "Project root: $PROJ"
 
 # keep every cache inside the repo so nothing lands in $HOME

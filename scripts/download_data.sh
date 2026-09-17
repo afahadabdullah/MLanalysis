@@ -2,7 +2,7 @@
 # Download GraphCast_small weights, normalization stats, and one official sample
 # into the repo's data/ directory. Run on the LOGIN node (compute nodes may have no internet).
 set -euo pipefail
-PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJ="${PROJ:-/home/afahad/project/MLanalysis}"
 cd "$PROJ/data"
 BASE="https://storage.googleapis.com/dm_graphcast"
 

@@ -6,7 +6,7 @@
 #SBATCH -t 04:00:00
 #SBATCH -o logs/%x_%j.out
 set -euo pipefail
-PROJ="$HOME/project/MLanalysis"
+PROJ="${PROJ:-/home/afahad/project/MLanalysis}"
 module load miniforge
 source activate "$PROJ/envs/gc"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
