@@ -52,7 +52,7 @@ cd /home/afahad/project/MLanalysis
 bash scripts/setup_env.sh
 ```
 
-The script creates `envs/gc` with Python 3.11, JAX (CUDA 12), GraphCast and the data stack, and keeps all caches inside the repo. Activate it later with:
+The script creates `envs/gc` with Python 3.12, JAX (CUDA 12), GraphCast and the data stack, and keeps all caches inside the repo. Activate it later with:
 
 ```bash
 module load miniforge

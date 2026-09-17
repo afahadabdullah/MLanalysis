@@ -14,7 +14,11 @@ mkdir -p "$CONDA_PKGS_DIRS" "$PIP_CACHE_DIR" "$PROJ"/{data,runs,results,configs}
 mkdir -p "$PROJ"/data/{params,stats,sample,era5,merra2,obs}
 
 module load miniforge
-conda create -p "$PROJ/envs/gc" python=3.11 -y
+if [ -d "$PROJ/envs/gc" ]; then
+    echo "Removing previous env to ensure clean Python 3.12 installation..."
+    rm -rf "$PROJ/envs/gc"
+fi
+conda create -p "$PROJ/envs/gc" python=3.12 -y
 # shellcheck disable=SC1091
 source activate "$PROJ/envs/gc"
 

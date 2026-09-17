@@ -1,6 +1,6 @@
 # MLanalysis: Observation Insertion & Initial-Condition Sensitivity in ML Weather Forecasting
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Model: GraphCast](https://img.shields.io/badge/model-GraphCast__small-green.svg)](https://github.com/google-deepmind/graphcast)
 [![Target: NCCS Prism](https://img.shields.io/badge/platform-NCCS%20Prism%20GPUs-orange.svg)](SETUP_NCCS_PRISM.md)
 
