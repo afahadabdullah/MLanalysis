@@ -141,7 +141,30 @@ python scripts/test_retention.py --amplitude 2.0 --lat 38.0 --lon 265.0 --steps 
 
 ---
 
-## 6. Submit a batch job
+## 6. Balanced Increment Insertion Experiment (E-BAL vs. E-DIR)
+
+Tests Hypothesis H3 from `PROJECT_PLAN_LEAN.md`:
+> *"Does spreading a surface increment vertically into 1000/925/850 hPa and balancing geopotential hypsometrically reduce initialization shock and increase retention compared to direct surface insertion?"*
+
+```bash
+python scripts/test_balanced_insertion.py
+```
+
+### What it produces in `runs/balanced/`:
+
+| File / Plot | Description |
+|---|---|
+| `retention_comparison_dir_vs_bal.png` | Direct vs. Balanced retention decay curves ($R_{\text{dir}}$ vs $R_{\text{bal}}$) |
+| `shock_and_rmse_comparison.png` | (A) Initialization shock / first-step jump comparison, (B) CONUS RMSE error curve |
+| `vertical_cross_section_dir_vs_bal.png` | Side-by-side vertical cross section ($p$ vs lon) of column warming |
+| `spatial_comparison_24h_dir_vs_bal.png` | Day-1 (+24h) spatial comparison: $E\text{-DIR}$ vs $E\text{-BAL}$ vs difference |
+| `balanced_comparison.nc` | NetCDF difference arrays for all 3 runs |
+| `balanced_experiment_summary.txt` | Quantitative metrics, shock jump values, and lapse rate anomalies |
+
+---
+
+## 7. Submit a batch job
+
 
 
 For longer runs, use the SLURM batch script instead of an interactive session:
