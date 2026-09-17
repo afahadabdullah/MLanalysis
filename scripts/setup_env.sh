@@ -18,11 +18,14 @@ conda create -p "$PROJ/envs/gc" python=3.11 -y
 # shellcheck disable=SC1091
 source activate "$PROJ/envs/gc"
 
+# Isolate environment from ~/.local/lib to prevent dependency conflicts
+export PYTHONNOUSERSITE=1
+
 python -m pip install --upgrade pip
 python -m pip install --upgrade "jax[cuda12]"
 python -m pip install dm-haiku chex jraph trimesh dm-tree \
     xarray netcdf4 h5netcdf zarr gcsfs dask pandas scipy matplotlib cartopy \
-    xesmf esmpy pyarrow tqdm pyyaml
+    pyarrow tqdm pyyaml python-dateutil
 python -m pip install git+https://github.com/google-deepmind/graphcast.git
 
 echo
