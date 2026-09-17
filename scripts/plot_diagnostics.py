@@ -113,11 +113,12 @@ def _get_field(ds, var, step, level=None, batch=0):
 def _add_map_features(ax):
     """Add coastlines and gridlines if cartopy is available."""
     if HAS_CARTOPY:
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.5, color="k")
-        ax.add_feature(cfeature.BORDERS, linewidth=0.3, color="grey")
-        gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.5)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.7, edgecolor="black", facecolor="none", zorder=3)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.4, edgecolor="dimgray", facecolor="none", zorder=3)
+        gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.5, zorder=3)
         gl.top_labels = False
         gl.right_labels = False
+
 
 
 def _create_axes(ncols=3, figsize=(18, 5)):

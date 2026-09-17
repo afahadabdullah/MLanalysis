@@ -336,12 +336,13 @@ print(f"\n[6/6] Generating publication diagnostic plots in {OUTDIR} ...")
 
 def add_map_elements(ax):
     if HAS_CARTOPY:
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.6, color="k")
-        ax.add_feature(cfeature.BORDERS, linewidth=0.4, color="grey")
-        ax.add_feature(cfeature.STATES, linewidth=0.2, color="lightgrey")
-        gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.4)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.7, edgecolor="black", facecolor="none", zorder=3)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.5, edgecolor="black", facecolor="none", zorder=3)
+        ax.add_feature(cfeature.STATES, linewidth=0.3, edgecolor="dimgray", facecolor="none", zorder=3)
+        gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.4, zorder=3)
         gl.top_labels = False
         gl.right_labels = False
+
 
 # Plot 1: Retention Decay Curve
 fig, ax = plt.subplots(figsize=(8, 5))
