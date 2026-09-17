@@ -24,15 +24,27 @@ if not any("gpu" in str(d).lower() or "cuda" in str(d).lower() for d in devices)
     print("WARNING: No GPU device detected. Forecast will run on CPU (very slow).")
 
 import haiku as hk
-from graphcast import (
-    autoregressive,
-    casting,
-    checkpoint,
-    data_utils,
-    graphcast,
-    normalization,
-    rollout,
-)
+try:
+    from graphcast import (
+        autoregressive,
+        casting,
+        checkpoint,
+        data_utils,
+        graphcast,
+        normalization,
+        rollout,
+    )
+except ImportError:
+    from weathernext.weathernext1_graph import graphcast
+    from weathernext.utils import (
+        autoregressive,
+        casting,
+        checkpoint,
+        data_utils,
+        normalization,
+        rollout,
+    )
+
 
 PROJ = os.environ.get("PROJ", "/home/afahad/project/MLanalysis")
 DATA_DIR = os.path.join(PROJ, "data")
