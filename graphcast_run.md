@@ -163,7 +163,37 @@ python scripts/test_balanced_insertion.py
 
 ---
 
-## 7. Submit a batch job
+## 7. Experiment 0: Identical-Twin (OSSE) Insertion Test
+
+Ranks observation insertion methods against a **known Nature Run truth**:
+> *"Which observation insertion method recovers the most background error, and does physical balance (BAL) outperform equal-heat column insertion (COL) and surface-only insertion (DIR)?"*
+
+```bash
+python scripts/test_exp0_twin.py
+```
+
+### What it evaluates:
+* **Nature Run ($F_{\text{nature}}$):** Clean true atmospheric evolution.
+* **Degraded Background ($F_{\text{bg}}$):** Analysis with cold bias ($-2.0\text{ K}$) at both input frames.
+* **`DIR`:** Inserts synthetic obs at surface only.
+* **`COL`:** Inserts synthetic obs into column ($1000, 925, 850\text{ hPa}$) **without** $Z$ balance.
+* **`BAL`:** Inserts synthetic obs with column heat **and** hydrostatic geopotential lift.
+
+### What it produces in `runs/exp0_twin/`:
+
+| File / Plot | Description |
+|---|---|
+| `exp0_error_recovery_curve.png` | **Error Recovery Percentage (%)** vs. Lead Time for `DIR`, `COL`, and `BAL` |
+| `exp0_conus_rmse_progression.png` | CONUS RMSE progression vs. Nature Run |
+| `exp0_depth_vs_balance_tradeoff.png` | **Disentangles Depth Benefit (`COL - DIR`) from Balance Benefit (`BAL - COL`)** |
+| `exp0_day1_error_comparison_maps.png` | 4-panel Day-1 absolute error maps against Nature Run |
+| `exp0_twin_dataset.nc` | 4D NetCDF trajectory dataset for all runs |
+| `exp0_twin_summary.txt` | Quantitative error recovery table by lead time |
+
+---
+
+## 8. Submit a batch job
+
 
 
 
