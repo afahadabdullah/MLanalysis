@@ -161,6 +161,56 @@ MERRA-2 is mapped to ERA5 statistics by removing the monthly-mean difference and
 - **Dev / tuning:** 2018, 24 starts (monthly, at 00 and 12 UTC). S0 and S1 dates come from this pool.
 - **Evaluation:** 2019–2020, **80 starts**. Balance 00 and 12 UTC and all four seasons, ~10 days apart.
 
+### Exp 0b: information propagation (impulse-response / Green's function view)
+
+**Reframing.** Instead of asking "how much error was removed", ask **how injected information travels through the model**. No truth and no observations are needed, so there is no inverse-crime risk: the increment *is* the information, and the question is how long it lives, where it goes, and what it turns into.
+
+**Design (all runs are pairs: control vs. perturbed, differenced):**
+
+| Factor | Levels |
+|---|---|
+| Insertion depth | `2t` only; `2t`+column T (1000–850); deep column (to 700) |
+| Balance | with vs. without the hypsometric Z update; nudged version |
+| Variable | T; q; u,v; z |
+| Horizontal scale | σ ≈ 2°, 4°, 8° |
+| Amplitude | 0.5, 1, 2, 4 K (and both signs) |
+| Location / regime | plains, coast, mountain; winter night vs. summer day |
+| Lead | to 120 h |
+
+**Metrics (per run pair):**
+- **Information half-life:** lead time at which retention R(t) falls to 0.5.
+- **Propagation:** displacement and speed of the anomaly centroid; comparison with the 850 hPa steering flow.
+- **Spread:** area above a threshold, and the growth of the anomaly's spatial scale.
+- **Vertical transfer:** the fraction of a surface increment that appears at 925/850/700 hPa after 6–24 h.
+- **Cross-variable transfer:** the induced Δwind, ΔMSLP and Δq per K of ΔT — does the model build its own balance?
+- **Linearity:** does the response scale with amplitude, and is it symmetric in sign? A departure from linearity marks where the model treats increments non-physically.
+
+**Why this is worth doing on its own:** it characterizes an ML forecast model's response to initial-condition information the way a Green's function does for a dynamical model — cheap (a few hundred 5-day runs), self-contained, and it directly supports Q3 (does the insertion method matter?) without needing a truth.
+
+**Its limit:** propagation is not skill. A method that keeps information longest is not automatically the most accurate, so Exp 0b ranks *persistence* and Exp 0 (twin) ranks *accuracy*. The two together answer "what is the best way to insert new data".
+
+### Exp 0: identical-twin (OSSE) insertion test — answers the main question with no station data
+
+**Why:** with real observations, "better observed" always has to be argued. In a twin experiment it is true by construction, so the insertion methods can be ranked directly.
+
+**Construction (one date, then ~10 dates):**
+1. **Truth:** the ERA5 state at t0−6 h and t0, and its true trajectory to +72 h (from consecutive ERA5 analyses, or from a model run started at truth — state which, and keep it fixed).
+2. **Degraded analysis A⁻:** truth + an error field that is **multivariate and generated independently of the correction operator** — otherwise the experiment is an inverse crime and the answer is arithmetic (see `RESULTS.md` §10.4). Preferred: `A⁻ = truth + α × (MERRA-2 − ERA5)` at both input times, across `t`, `z`, `u`, `v`, `q`, `2t`, with α ≈ 0.5–1. Fallback: a random correlated `z` field with `t` and `u,v` derived hypsometrically/geostrophically. **The mass field must be degraded too**, or any balanced increment is guaranteed to look harmful.
+3. **Synthetic observations:** sample the **truth** `2t` at ~300 CONUS points (mimicking mesonet density), add observation noise (about 0.5 K). Hold back 30 % for verification.
+4. **Insertion arms:** A⁻ plus those observations by
+   - **DIR** — `2t` only,
+   - **COL** — the same increment spread to 1000/925/850 hPa, geopotential unchanged,
+   - **BAL** — COL plus hypsometric geopotential (and geostrophic winds if the increment is deep),
+   - **NUD** — the model nudged toward the adjusted state over 12–24 h with the tapered gain.
+   Every arm is applied at **both** input times unless the t0-only case is the experiment.
+5. **Controls:** truth (upper bound), A⁻ (lower bound), and a smoothing arm matched to NUD's spectrum.
+
+**Scoring:** forecast error against the **true** trajectory at +6…+72 h (CONUS 2 m T and 850 hPa T), plus withheld-observation error at t0, increment retention, and the inconsistency metrics.
+
+**What it delivers:** the fraction of the analysis error each method removes, and whether that ordering persists with lead time. This is the direct answer to "what is the best way to insert new data", before any station download. It also calibrates the amplitude sweep (how large an increment must be to matter) and the case-to-case spread that sets the sample size for the real-data experiments.
+
+**Cost:** 6 arms × 10 dates ≈ 60 five-day forecasts, about 1–2 weeks on top of the current code. The insertion code is then reused unchanged by Exp 2.
+
 ### Exp 1: baselines and the ERA5 ceiling (answers Q1)
 | Run | Initial state | Question |
 |---|---|---|
@@ -239,6 +289,7 @@ Compare these with E-DIR and E-NUD from Exp 2, using the same variable, region, 
 
 | Order | Experiment | New code needed | New data | Effort | Why here |
 |---|---|---|---|---|---|
+| **0** | **Exp 0: identical-twin (OSSE)** | error field + synthetic obs sampler; reuses the existing insertion code | **none** | **Low** | The only experiment that can rank insertion methods against a known truth. Run it first |
 | **1** | **Exp 1 core: E vs. M** | MERRA-2 adapter only | MERRA-2, ERA5 | **Low** | Needs no observations. Proves the whole pipeline and gives the ceiling gap |
 | **2** | **Exp 1: M-CLIM** (climatology mapping) | ~50 lines | 2010–2017 monthly statistics | Low | Answers Q1 (distribution vs. information) cheaply |
 | **3** | **Exp 1: nudging controls** (E-NUD0, M-NUD0, M→E) | `nudge.py` + α=1 check | none | Low–moderate | Reusable by every later experiment |

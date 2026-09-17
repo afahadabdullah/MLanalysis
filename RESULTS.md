@@ -14,14 +14,16 @@ This experiment evaluates the fundamental premise of **Experiment 2 (Mesonet Obs
 
 In numerical weather prediction (NWP) models based on primitive equations, directly inserting an unbalanced surface observation often triggers high-frequency gravity-wave oscillations (initialization shock) that disperse and dissipate the signal within $1\text{–}3$ hours.
 
+> **Read Section 8 (Assessment) and Section 9 (What these results mean) before quoting any number below.** The retention numbers are real, but the E-DIR vs. E-BAL comparison is confounded by perturbation amplitude, the increment was applied at t0 only, and the Section 5.2 "skill" claim is not supported.
+
 ### Key Finding
-**GraphCast exhibits strong, persistent memory for surface boundary-layer temperature increments without catastrophic initialization shock.**
+**GraphCast retains a surface temperature increment for at least 24 h: it advects and deforms as a coherent airmass instead of being destroyed by an initialization shock.** This is a statement about increment *persistence*, not about forecast skill, and it rests on a single synthetic case.
 
 * At **$+06\text{h}$**, the model retains **$54.1\%$** of the injected increment projection ($>1.05\text{ K}$ peak remaining from a $+2.0\text{ K}$ injection).
 * At **$+12\text{h}$**, peak retention reaches **$56.7\%$** ($+1.13\text{ K}$), maintaining a coherent advecting airmass.
 * At **$+24\text{h}$ (Day 1)**, **$37.9\%$** of the projection and **$38.7\%$** of the peak amplitude ($\sim 0.77\text{ K}$) persist downstream over the Eastern United States.
 
-Because the Day-1 retained anomaly ($\sim 0.77\text{ K}$) represents $30\text{–}50\%$ of typical $T_{2m}$ station RMSE against independent observations ($1.5\text{–}2.5\text{ K}$), the signal-to-noise threshold from the project plan is satisfied. **The infrastructure is validated to proceed with real station observation insertion (Stage S1 / Exp 2).**
+Because the Day-1 retained anomaly ($\sim 0.77\text{ K}$) is $30\text{–}50\%$ of a typical $T_{2m}$ station RMSE ($1.5\text{–}2.5\text{ K}$), the Stage S0 signal-to-noise gate is passed: the effect is large enough to be worth chasing. **The infrastructure is validated. The science is not yet: no information was inserted, only a fictitious anomaly, so these runs cannot say which insertion method is better.**
 
 ---
 
@@ -118,6 +120,8 @@ To test **Hypothesis H3 (Physical Balance)**, a 3-way comparative rollout was ex
 
 ### 5.2 Key Scientific Findings from Balanced Insertion
 
+> **Caveat (see Section 8):** E-BAL adds the column warming *in addition to* the same surface increment, so it injects more heat than E-DIR. The comparison below mixes amplitude with balance. A third arm (column warming without the geopotential update) is needed before attributing any of this to balance.
+
 1. **Retention is More Than Doubled ($38.1\% \to 83.7\%$ at Day 1):**
    * In `E-DIR`, an un-supported surface heat patch is rapidly diluted by lower-tropospheric mixing and numerical diffusion.
    * In `E-BAL`, because the entire boundary layer ($1000\text{–}850\text{ hPa}$) contains matching thermal energy and hypsometrically lifted geopotential, the warm anomaly is sustained by the column thermodynamics, retaining **$83.7\%$** of the projection and **$100.1\%$** of its peak amplitude at Day 1 ($+2.00\text{ K}$ out of $+2.00\text{ K}$ preserved).
@@ -130,6 +134,7 @@ To test **Hypothesis H3 (Physical Balance)**, a 3-way comparative rollout was ex
      `E-DIR` modifies *only* $T_{2m}$, leaving the upper-air mass field ($Z$) completely flat; the model initially feels no vertical or horizontal gradient aloft, so the immediate surface tendency is subdued. In contrast, `E-BAL` perturbs a full **3D column** ($T_{1000}, T_{925}, T_{850}$ + geopotential ridge $\Delta\Phi$). During the first 6 hours, GraphCast initiates active **geostrophic adjustment** — accelerating surface winds and establishing pressure tendencies to balance the new thermal ridge. This active dynamic adjustment accounts for the higher first-step jump.
 
 3. **Meteorological Interpretation of the CONUS RMSE Trajectory:**
+   * **Not supported as a skill result.** The verification reference is unperturbed ERA5, which contains no trace of the synthetic bubble, so any perturbation can only add error except by chance cancellation with model bias. The $+24\text{h}$ differences ($\le 0.033\text{ K}$ on one case) are within case-to-case noise. The paragraphs below describe what the single case did, not a demonstrated skill gain.
    * **Hours $+6\text{h}$ to $+18\text{h}$:** In this verification against ERA5 truth, the baseline analysis is itself the truth. Artificially heating the column in `E-BAL` introduces a deeper volume of unobserved thermal anomaly than `E-DIR`, leading to higher initial RMSE ($1.169\text{ K}$ vs $1.030\text{ K}$ at $+6\text{h}$). In real operational assimilation (correcting a model bias with mesonets), this deep retention will directly correct the airmass error.
    * **The Hour $+24\text{h}$ Crossover (Crucial Milestone):** Between $+18\text{h}$ and $+24\text{h}$, the RMSE trajectories converge and cross over:
      * **Baseline ERA5:** $1.256\text{ K}$
@@ -172,12 +177,139 @@ Stored in `runs/balanced/` and `runs/retention/`:
 ## 7. Conclusions & Roadmap Status
 
 ### Conclusions
-1. **Hypothesis H1 & H3 Strongly Supported:**
-   * GraphCast possesses significant thermal memory for surface observations.
-   * **Balanced insertion (`E-BAL`) more than doubles increment retention ($38\% \to 84\%$) and preserves $100\%$ of peak amplitude through 24 hours.**
-2. **Skill Potential:** At Day 1, inserting regional boundary layer increments reduced CONUS RMSE below the baseline analysis error.
+1. **Supported:** GraphCast retains a surface temperature increment through 24 h (≈38 % of the projection, ≈40 % of the peak) and advects it coherently. There is no catastrophic initialization shock, and a surface-only change propagates into the lower troposphere, MSLP and the 10 m winds.
+2. **Supported:** *how* the increment is constructed changes its lifetime by a large factor (38 % vs. 84 % at Day 1). Whether that factor is due to **balance** or simply to **more heat in a deeper layer** is unresolved (Section 8, issue 1).
+3. **Not supported:** any claim about forecast skill. The Day-1 "crossover" below baseline is a 0.03 K difference on one case, verified against a truth that never contained the anomaly.
+4. **Untested:** the nudged arm (`E-NUD`), insertion at both input times, real observational information, and every statistical statement.
 
 ### Ready for Next Phase:
 * **Stage S0 Complete:** Pipeline correctness, GPU rollout benchmarks, and insertion physics are fully established and validated.
 * **Stage S1:** Ready to ingest real station observations (MADIS / USCRN) and download the 2018 winter benchmark date.
 
+
+---
+
+## 8. Assessment of these results (review, 17 Sep 2026)
+
+**What is solidly established:** the pipeline works end to end (checkpoint, adapter, rollout, diagnostics, GPU timing), a surface increment propagates as a coherent advected airmass rather than being destroyed by a shock, and a surface-only increment induces a response in the lower troposphere, MSLP and 10 m winds. That satisfies the Stage S0 machinery gate.
+
+**What the numbers do not yet support.** Four issues have to be fixed before any of these results are quoted as science.
+
+| # | Issue | Why it matters | Fix |
+|---|---|---|---|
+| **1** | **E-BAL adds more heat than E-DIR.** It applies the same +2 K at 2 m *and* +1.0/+0.6/+0.2 × ΔX at 1000/925/850 hPa, plus the geopotential ridge | Amplitude and balance are confounded. "Retention doubles" may simply mean "more heat was added". Retention above 100 % and peak retention of 127 % are the signature of this, not of balance | Add a third arm **E-COL**: the same column warming **without** the geopotential update. Then E-COL vs. E-BAL isolates balance at equal heat, and E-DIR vs. E-COL isolates depth. Alternatively, rescale so the column-integrated heat added is identical |
+| **2** | **The increment is applied only at t0, not at t0−6 h** (both scripts) | GraphCast infers a tendency from its two input frames, so a t0-only insertion implies a +2 K / 6 h warming trend. The model may be extrapolating that trend, which would inflate retention | Run the same case with the increment applied at **both** input times, and report both. The difference is the "implied tendency" artifact |
+| **3** | **Forecast "skill" is verified against unperturbed ERA5** | The synthetic bubble is fictitious, so ERA5 is truth *without* it. Any perturbation can only add error, except by chance cancellation with model bias. The +24 h "crossover" (1.223 / 1.231 vs. 1.256 K) is a 0.03 K difference on **one case**, well inside case-to-case noise | Drop the skill claim. Section 5.2 point 3 and the "Skill Potential" conclusion should be labeled *not supported*. Skill needs either real observations or the twin experiment below |
+| **4** | **n = 1, and the case is the packaged 2022-01-01 sample** | Nothing statistical follows, and one synoptic situation may be unrepresentative | Repeat on ~10 dev dates, and in different regimes (winter night, summer day), before any ordering of methods is asserted |
+
+**Minor points:** report the retention denominator explicitly for each arm; state that "CONUS RMSE vs. ERA5" is the model's own truth, not observations; and record whether re-running gives bit-identical output, so that 0.03 K differences can be distinguished from run-to-run noise.
+
+**Does this answer the project's main question?** Not yet. The main question is *what is the best way to insert new information into a model trained on ERA5*. These runs test **how long an arbitrary increment survives**, which is a necessary condition but not an answer, because:
+- a synthetic bubble carries **no information** — it is not closer to the truth, so "better insertion" cannot be defined;
+- the verification reference contains no trace of the inserted feature;
+- the nudged arm (E-NUD), the third insertion method, has not been run.
+
+**The missing experiment that can answer it with synthetic data: an identical-twin (OSSE) test.** See `PROJECT_PLAN_LEAN.md` Exp 0. In brief: treat ERA5 as truth, degrade it to make an imperfect analysis, then "observe" the truth at station-like points and insert those observations into the degraded state by each method (DIR / COL / BAL / NUD). Verify the forecasts against the true ERA5 trajectory. Because the truth is known, "the observations are better" is true by construction and the best insertion method is well defined — with no station data required.
+
+
+---
+
+## 9. What these results mean, and what to run next
+
+### 9.1 Meaning in one paragraph
+
+The model behaves like a physical system with memory: an inserted low-level warm anomaly is advected, deformed along the baroclinic zone, and coupled into pressure and wind. Nothing is wiped out by a shock, which is the ML analogue of the question that motivates the whole project. The practically important observation is that **the vertical structure of the increment, not the surface value, decides how long it lives**: a surface-only change decays to about 40 % in a day, whereas a change carried through the boundary-layer column persists at nearly full amplitude. That is a mechanism result. It says nothing yet about accuracy, because the anomaly was invented — it carried no information, and the verification data contain no trace of it.
+
+### 9.2 What this changes in the plan
+
+- The retention diagnostic works and is sensitive; it becomes the primary mechanism metric everywhere else.
+- The effect size clears the noise floor, so ~10 dates should be enough for a pilot signal (confirmed at S1).
+- A **third insertion arm (`E-COL`: column warming, no geopotential update)** is now required in every insertion experiment, to separate depth from balance.
+- All insertions must be applied at **both input times** by default, with the t0-only case kept as an explicit "implied tendency" sensitivity test.
+
+### 9.3 Is Experiment 1 (E vs. M vs. M-CLIM) the next run?
+
+**It is the right next *data* task, but not the next *GPU* task.** They do not compete: run them in parallel.
+
+| | Exp 0 (identical twin / OSSE) | Exp 1 (E vs. M vs. M-CLIM) |
+|---|---|---|
+| New code | Error field + synthetic obs sampler; reuses the insertion code already written | MERRA-2 adapter: H→z, OMEGA→w, PRECTOT→6 h precipitation, 0.5°×0.625°→1° conservative regrid, below-ground fill, level ordering, static fields |
+| New data | None | MERRA-2 (likely already on NCCS shared storage), plus the ERA5 climatology for M-CLIM |
+| Time to first result | **Days** | 2–3 weeks, mostly data engineering |
+| Answers | **The main question:** which insertion method recovers the most analysis error, against a known truth | Q1: how much of the foreign-analysis penalty is distribution shift vs. information |
+| Risk | Low | Moderate: a silent unit, level-order or below-ground error looks exactly like a "foreign analysis penalty" |
+
+**Recommended order**
+
+1. **This week — finish the S0 fixes** (cheap, same code): add `E-COL`, insert at both input times, rerun the E/DIR/COL/BAL comparison, and confirm bit-identical reruns. This makes the balance-vs-depth statement defensible.
+2. **Next — Exp 0, the twin test.** It reuses that code, needs no downloads, and is the only experiment that can rank DIR / COL / BAL / NUD against a known truth. It also calibrates increment amplitude and case-to-case spread, which sets the sample size for everything later.
+3. **In parallel — start the MERRA-2 adapter for Exp 1.** Locate MERRA-2 on NCCS shared storage now (this is the NASA-specific advantage: no download), and validate it channel by channel against ERA5 for one date before running any forecast. Exp 1's pipeline then runs as soon as the adapter passes its checks.
+
+**One warning for Exp 1:** the M-minus-E gap is only meaningful once the adapter is proven. Before claiming a foreign-analysis penalty, verify that a *MERRA-2-derived state passed through the ERA5 pipeline* reproduces sane fields — compare MERRA-2 and ERA5 on the same date, channel by channel, and confirm the differences look like reanalysis differences rather than unit, ordering or interpolation errors. A large apparent penalty is far more often a broken adapter than a scientific result.
+
+---
+
+## 10. Experiment 0 — identical-twin (OSSE) insertion test, first run
+
+**Run:** `scripts/test_exp0_twin.py`, NCCS Prism `gpu004`, GraphCast_small, ERA5 sample case (2022-01-01 00 UTC), 4 steps (24 h), ~1.5 s per rollout. Outputs in `runs/exp0_twin/`.
+
+### 10.1 Design as executed
+
+| Element | As run |
+|---|---|
+| **Nature run (truth)** | Unperturbed ERA5 initial state, rolled forward 24 h. The forecast from truth *is* the truth |
+| **Degraded background (BG)** | Gaussian cold bias (σ = 4° lat × 6° lon, centered 38 °N, 95 °W) applied at **both** input times to `2t` **and** to `t` at 1000/925/850 hPa with weights 1.0 / 0.6 / 0.2. Geopotential, winds and humidity were **not** degraded |
+| **"Observations"** | The exact negative of the background error, applied as a full gridded field (no point sampling, no observation noise, no withheld stations) |
+| **Arms** | **DIR** (`2t` only), **COL** (`2t` + column T, no Z), **BAL** (COL + hypsometric Z), each at both input times |
+| **Score** | CONUS area-weighted 2 m T RMSE against the nature run; "error recovered" = 1 − RMSE_arm / RMSE_BG |
+
+### 10.2 Results
+
+| Lead | BG error (K) | DIR (K) | recovered | COL (K) | recovered | BAL (K) | recovered |
+|---|---|---|---|---|---|---|---|
+| +06 h | 0.3026 | 0.0518 | 82.9 % | **0.0168** | **94.5 %** | 0.0332 | 89.0 % |
+| +12 h | 0.2702 | 0.0825 | 69.5 % | **0.0344** | **87.3 %** | 0.0621 | 77.0 % |
+| +18 h | 0.2745 | 0.1226 | 55.4 % | **0.0416** | **84.9 %** | 0.0789 | 71.3 % |
+| +24 h | 0.2966 | 0.1496 | 49.6 % | **0.0477** | **83.9 %** | 0.0829 | 72.1 % |
+
+Depth benefit (COL − DIR): +11.6 % at 6 h growing to **+34.4 % at 24 h**.
+Balance "benefit" (BAL − COL): **negative** throughout, −5.4 % to −13.6 %.
+
+Figures: `exp0_error_recovery_curve.png`, `exp0_conus_rmse_progression.png`, `exp0_depth_vs_balance_tradeoff.png`, `exp0_day1_error_comparison_maps.png`; data in `exp0_twin_dataset.nc`.
+
+### 10.3 What is genuinely established
+
+1. **The twin machinery works.** Truth, degraded background, three insertion arms and a like-for-like score against a known truth all run in seconds. This is the framework the real-observation experiments need.
+2. **A surface-only correction decays; a column correction does not.** DIR loses roughly half its benefit by 24 h (82.9 % → 49.6 %), while COL holds at ~84 %. GraphCast pulls the corrected surface back toward the (still wrong) air above it, so **the depth of the increment governs how long a correction lasts**. This is consistent with the Section 3–5 retention results, and it is the practically useful message so far.
+
+### 10.4 What this run cannot establish (design issue: inverse crime)
+
+**The correction is the exact negative of the background error, with the same vertical weights (1.0 / 0.6 / 0.2).** So:
+
+| Apparent result | Why it is predetermined |
+|---|---|
+| COL recovers ~84–94 % | COL's increment *is* the error, level for level. Near-perfect recovery is arithmetic, not a finding |
+| DIR recovers less | DIR deliberately corrects only one of the four degraded levels; the residual column error is left in by construction |
+| BAL is **worse** than COL | The background's geopotential was never degraded, so BAL's hypsometric Z increment *adds* an error the truth does not contain. Under this setup any Z update must hurt |
+
+Therefore **"balance hurts" is not a result of this experiment** — it is a consequence of degrading temperature without degrading the mass field. Equally, the depth advantage is inflated: the true error happened to have exactly COL's vertical shape.
+
+Two further gaps against the Exp 0 specification in the plan: there are **no sparse synthetic station observations** (no OI spreading, no observation noise, no withheld stations), and the background error is a single smooth bubble rather than a realistic multivariate analysis error. The BG CONUS RMSE (≈0.3 K) is also well below a realistic surface analysis error.
+
+### 10.5 Required fixes before Exp 0 counts (next run)
+
+1. **Generate the background error independently of the correction operator, and make it multivariate.** Preferred: `X_bg = truth + α × (MERRA-2 − ERA5)` at both input times, for `t`, `z`, `u`, `v`, `q` and `2t`, with α ≈ 0.5–1 — a real, self-consistent analysis difference. Fallback until MERRA-2 is ready: a random correlated `z` field with `t` and `u,v` derived from it hypsometrically and geostrophically, so the error is balanced.
+2. **Degrade the mass field.** Only then can a Z-consistent increment help, and only then does the balance question have meaning.
+3. **Sample observations, don't hand over the answer:** ~300 CONUS points from the truth `2t`, plus ~0.5 K noise, spread by OI with a chosen length scale; hold back 30 % of stations for an independent t0 check.
+4. **Add the nudged arm (NUD)** and a smoothing control matched to NUD's spectrum. Without NUD the "best insertion method" question is unanswered.
+5. **Repeat on ~10 dates** and sweep the error amplitude, then report the spread.
+
+Once these are in place, the same table becomes a real ranking: how much of a realistic analysis error each insertion method removes, and how that ordering evolves with lead time.
+
+### 10.6 Alternative framing: information propagation instead of error recovery
+
+The same runs can be read as **information propagation** rather than error correction: an increment is new information injected at t0, and the question becomes how long it survives, how far it travels, and what other variables it turns into. That framing needs no truth and no observations, so it is immune to the inverse-crime problem in §10.4 — the increment *is* the information.
+
+Taken that way, the results so far already say something: **a surface-only insertion has an information half-life of roughly a day, while a column insertion is still ~84 % intact at 24 h**, and a surface temperature increment converts into lower-tropospheric temperature, MSLP and wind responses within one step.
+
+This is developed as **Exp 0b** in `PROJECT_PLAN_LEAN.md` (impulse-response / Green's function characterization: depth, balance, variable, scale, amplitude, regime; metrics of half-life, propagation speed, spread, vertical and cross-variable transfer, and linearity). Note the limit: persistence is not accuracy. Exp 0b ranks how well information survives; the twin experiment ranks whether it improves the forecast. Both are needed to answer "what is the best way to insert new data".
