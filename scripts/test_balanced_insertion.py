@@ -177,14 +177,16 @@ delta_X[np.abs(delta_X) < (0.01 * np.abs(args.amplitude))] = 0.0
 weights_lat = np.cos(np.deg2rad(lats))[:, np.newaxis]
 delta_X_norm_sq = np.sum(delta_X**2 * weights_lat)
 
+# Time index for t0 (last input frame)
+t0_idx = list(eval_inputs.coords["time"].values).index(t0_coord)
+
 # --- 3A. E-DIR: Modify only 2m_temperature at t0 ---
 eval_inputs_dir = eval_inputs.copy(deep=True)
-t2m_curr = eval_inputs_dir["2m_temperature"].sel(time=t0_coord).values
-eval_inputs_dir["2m_temperature"].loc[dict(time=t0_coord)] = t2m_curr + delta_X
+eval_inputs_dir["2m_temperature"].values[..., t0_idx, :, :] += delta_X
 
 # --- 3B. E-BAL: Vertical spreading + Hypsometric Geopotential Integration ---
 eval_inputs_bal = eval_inputs.copy(deep=True)
-eval_inputs_bal["2m_temperature"].loc[dict(time=t0_coord)] = t2m_curr + delta_X
+eval_inputs_bal["2m_temperature"].values[..., t0_idx, :, :] += delta_X
 
 # Pressure levels available
 levels = eval_inputs_bal.coords["level"].values
@@ -197,13 +199,13 @@ R_d = 287.058
 # 1000 hPa: 1.0, 925 hPa: 0.6, 850 hPa: 0.2
 level_weights = {1000: 1.0, 925: 0.6, 850: 0.2}
 
-# Apply temperature spread to 3D temperature at t0
+# Apply temperature spread directly to 3D temperature at t0
 delta_T_profile = {}
 for lev, w in level_weights.items():
     if lev in levels:
-        t_lev = eval_inputs_bal["temperature"].sel(time=t0_coord, level=lev).values
+        lev_idx = list(levels).index(lev)
         dT = w * delta_X
-        eval_inputs_bal["temperature"].loc[dict(time=t0_coord, level=lev)] = t_lev + dT
+        eval_inputs_bal["temperature"].values[..., t0_idx, lev_idx, :, :] += dT
         delta_T_profile[lev] = dT
         print(f"      Balanced T increment applied at {lev:4d} hPa (weight = {w:.1f})")
 
@@ -213,7 +215,6 @@ for lev, w in level_weights.items():
 delta_Z_levels = {}
 delta_Z_cum = np.zeros_like(delta_X)
 
-# Start thickness integration from 1000 hPa upwards
 # 1000 -> 925 hPa:
 if 1000 in levels and 925 in levels:
     dT_layer_1000_925 = 0.5 * (delta_T_profile.get(1000, 0) + delta_T_profile.get(925, 0))
@@ -236,11 +237,12 @@ for lev in levels:
 # Apply geopotential increment to eval_inputs_bal['geopotential'] at t0
 for lev, dZ in delta_Z_levels.items():
     if lev in levels:
-        z_curr = eval_inputs_bal["geopotential"].sel(time=t0_coord, level=lev).values
-        eval_inputs_bal["geopotential"].loc[dict(time=t0_coord, level=lev)] = z_curr + dZ
+        lev_idx = list(levels).index(lev)
+        eval_inputs_bal["geopotential"].values[..., t0_idx, lev_idx, :, :] += dZ
 
 max_z_lift = np.max(delta_Z_cum) / 9.80665  # converted to meters
 print(f"      Hypsometric geopotential ridge created aloft: +{max_z_lift:.2f} gpm max at 500 hPa")
+
 
 # ---------------------------------------------------------------------------
 # 4. Predictor Setup & Rollout Execution
