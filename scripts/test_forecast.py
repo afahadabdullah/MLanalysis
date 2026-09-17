@@ -207,4 +207,13 @@ with open(out_file, "w") as f:
         f.write(f"2m_temperature Mean: {np.nanmean(t2m):.2f} K\n")
 
 print(f"\nSummary logged to: {out_file}")
+
+# Save predictions and truth for diagnostic plotting
+pred_file = os.path.join(out_dir, "predictions.nc")
+truth_file = os.path.join(out_dir, "era5_truth.nc")
+predictions.to_netcdf(pred_file)
+eval_targets.to_netcdf(truth_file)
+print(f"Predictions saved to: {pred_file}")
+print(f"ERA5 truth saved to:  {truth_file}")
 print("GraphCast_small is ready for scientific experiments!")
+print(f"\nRun diagnostics:  python scripts/plot_diagnostics.py")
