@@ -397,8 +397,77 @@ if ("10m_u_component_of_wind" in preds.data_vars and
         print(f"  ✓ {fname}")
 
 # ===========================================================================
-# Done
+# 10. RMSE Growth vs. Lead Time (Error Curves)
 # ===========================================================================
+if n_steps > 1:
+    print("\n--- RMSE vs. Lead Time Curves ---")
+    lead_hours = [(s + 1) * 6 for s in range(n_steps)]
+    weights_lat = np.cos(np.deg2rad(lats))[:, np.newaxis]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    
+    # 1. 2m Temperature
+    if "2m_temperature" in preds and "2m_temperature" in truth:
+        rmse_t2m = []
+        for s in range(n_steps):
+            e = _get_field(preds, "2m_temperature", s) - _get_field(truth, "2m_temperature", s)
+            rmse_t2m.append(float(np.sqrt(np.nanmean(weights_lat * e**2))))
+        axes[0, 0].plot(lead_hours, rmse_t2m, "o-", color="#d62728", linewidth=2)
+        axes[0, 0].set_title("2m Temperature (K)")
+        axes[0, 0].set_ylabel("Area-Weighted RMSE")
+        axes[0, 0].grid(True, alpha=0.3)
+        axes[0, 0].set_xticks(lead_hours)
+
+    # 2. Z500 (converted to geopotential height in meters)
+    if "geopotential" in preds and "geopotential" in truth and "level" in preds["geopotential"].dims:
+        rmse_z500 = []
+        for s in range(n_steps):
+            e = (_get_field(preds, "geopotential", s, level=500) - 
+                 _get_field(truth, "geopotential", s, level=500)) / 9.80665  # m2/s2 -> gpm
+            rmse_z500.append(float(np.sqrt(np.nanmean(weights_lat * e**2))))
+        axes[0, 1].plot(lead_hours, rmse_z500, "s-", color="#1f77b4", linewidth=2)
+        axes[0, 1].set_title("500 hPa Geopotential Height (m)")
+        axes[0, 1].set_ylabel("Area-Weighted RMSE")
+        axes[0, 1].grid(True, alpha=0.3)
+        axes[0, 1].set_xticks(lead_hours)
+
+    # 3. T850
+    if "temperature" in preds and "temperature" in truth and "level" in preds["temperature"].dims:
+        rmse_t850 = []
+        for s in range(n_steps):
+            e = _get_field(preds, "temperature", s, level=850) - _get_field(truth, "temperature", s, level=850)
+            rmse_t850.append(float(np.sqrt(np.nanmean(weights_lat * e**2))))
+        axes[1, 0].plot(lead_hours, rmse_t850, "^-", color="#ff7f0e", linewidth=2)
+        axes[1, 0].set_title("850 hPa Temperature (K)")
+        axes[1, 0].set_xlabel("Lead Time (hours)")
+        axes[1, 0].set_ylabel("Area-Weighted RMSE")
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].set_xticks(lead_hours)
+
+    # 4. 10m Wind Speed
+    if "10m_u_component_of_wind" in preds and "10m_u_component_of_wind" in truth:
+        rmse_w10 = []
+        for s in range(n_steps):
+            u_fc = _get_field(preds, "10m_u_component_of_wind", s)
+            v_fc = _get_field(preds, "10m_v_component_of_wind", s)
+            u_tr = _get_field(truth, "10m_u_component_of_wind", s)
+            v_tr = _get_field(truth, "10m_v_component_of_wind", s)
+            e = np.sqrt(u_fc**2 + v_fc**2) - np.sqrt(u_tr**2 + v_tr**2)
+            rmse_w10.append(float(np.sqrt(np.nanmean(weights_lat * e**2))))
+        axes[1, 1].plot(lead_hours, rmse_w10, "d-", color="#2ca02c", linewidth=2)
+        axes[1, 1].set_title("10m Wind Speed (m/s)")
+        axes[1, 1].set_xlabel("Lead Time (hours)")
+        axes[1, 1].set_ylabel("Area-Weighted RMSE")
+        axes[1, 1].grid(True, alpha=0.3)
+        axes[1, 1].set_xticks(lead_hours)
+
+    fig.suptitle("Forecast Error Growth vs. Lead Time", fontsize=14, fontweight="bold", y=0.98)
+    fig.tight_layout()
+    fname = "rmse_vs_lead_time.png"
+    fig.savefig(os.path.join(args.outdir, fname), dpi=args.dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ✓ {fname}")
+
 n_plots = len([f for f in os.listdir(args.outdir) if f.endswith(".png")])
 print(f"\n{'=' * 60}")
 print(f"Done — {n_plots} diagnostic plots saved to:")

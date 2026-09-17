@@ -46,7 +46,18 @@ except ImportError:
     )
 
 
-PROJ = os.environ.get("PROJ", "/home/afahad/project/MLanalysis")
+import argparse
+
+parser = argparse.ArgumentParser(description="GraphCast test forecast verification")
+parser.add_argument("--steps", type=int, default=4,
+                    help="Number of forecast steps to run (each step is 6 hours). Default: 4 (24h)")
+parser.add_argument("--proj", default=os.environ.get("PROJ", "/home/afahad/project/MLanalysis"),
+                    help="Project root directory")
+parser.add_argument("--sample", default=None,
+                    help="Path to custom sample dataset NetCDF (default: data/sample/source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc)")
+args, _ = parser.parse_known_args()
+
+PROJ = args.proj
 DATA_DIR = os.path.join(PROJ, "data")
 PARAMS_FILE = os.path.join(
     DATA_DIR,
@@ -54,11 +65,12 @@ PARAMS_FILE = os.path.join(
     "GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - mesh 2to5 - precipitation input and output.npz",
 )
 STATS_DIR = os.path.join(DATA_DIR, "stats")
-SAMPLE_FILE = os.path.join(
+SAMPLE_FILE = args.sample or os.path.join(
     DATA_DIR,
     "sample",
     "source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc",
 )
+STEPS = args.steps
 
 
 # 1. Check prerequisites
@@ -111,8 +123,7 @@ with open(SAMPLE_FILE, "rb") as f:
         example_batch = xr.load_dataset(f).compute()
 
 
-# We test a 2-step forecast (2 x 6h = 12 hours)
-STEPS = 2
+print(f"\nTarget forecast horizon: {STEPS} steps ({STEPS * 6} hours)")
 eval_inputs, eval_targets, eval_forcings = data_utils.extract_inputs_targets_forcings(
     example_batch,
     target_lead_times=slice("6h", f"{STEPS * 6}h"),

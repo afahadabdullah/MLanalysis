@@ -44,10 +44,12 @@ python -c "import jax; print(jax.devices())" # must show [CudaDevice(id=0)]
 > packages in `~/.local/lib/python3.12/` can shadow the conda env and cause
 > import errors (particularly `xarray`).
 
-## 3. Run the test forecast
+## 3. Run the test forecast (24h / 4 steps)
 
 ```bash
-python scripts/test_forecast.py
+python scripts/test_forecast.py                  # runs 4 steps (24h) by default
+# or specify a different horizon:
+# python scripts/test_forecast.py --steps 2      # 2 steps (12h)
 ```
 
 This script:
@@ -56,32 +58,32 @@ This script:
 2. Loads normalization statistics (`diffs_stddev`, `mean`, `stddev` by level).
 3. Loads the official ERA5 sample dataset (2022-01-01, 4 steps).
 4. Builds the wrapped predictor and JIT-compiles on the GPU.
-5. Runs a **2-step (12 h) autoregressive rollout**.
+5. Runs a **4-step (24 h) autoregressive rollout** (+6h, +12h, +18h, +24h).
 6. Validates that predictions contain no NaNs and prints physical sanity checks.
 7. Saves outputs to `runs/`:
 
 | File | Contents |
 |------|----------|
-| `runs/predictions.nc` | GraphCast forecast (xarray Dataset) |
+| `runs/predictions.nc` | GraphCast forecast (xarray Dataset, 4 steps) |
 | `runs/era5_truth.nc` | ERA5 target fields (for verification) |
 | `runs/test_forecast_summary.txt` | Timing, device info, basic stats |
 
 **Expected output:**
 
 ```
-[5/5] Running 2-step (12h) forecast rollout on GPU ...
-      Forecast completed in ~10 seconds (includes initial JIT compile).
+[5/5] Running 4-step (24h) forecast rollout on GPU ...
+      Forecast completed in ~11 seconds (includes initial JIT compile).
 
-  ✓ '2m_temperature' predicted shape: (2, 1, 181, 360)
-  ✓ Mean 2m temperature: 276.76 K
-  ✓ Min/Max: 219.60 K / 318.42 K
+  ✓ '2m_temperature' predicted shape: (4, 1, 181, 360)
+  ✓ Mean 2m temperature: 276.81 K
+  ✓ Min/Max: 218.45 K / 319.12 K
   ✓ NaN count: 0
   ✓ SUCCESS: No NaNs in predicted output!
 ```
 
 > [!TIP]
 > The first run is slow (~10 s) because JAX JIT-compiles the graph. Subsequent
-> forecasts in the same process reuse the compiled graph and finish much faster.
+> forecasts in the same process reuse the compiled graph and finish in ~1-2 seconds.
 
 ## 4. Generate diagnostic plots
 
@@ -97,7 +99,8 @@ Plots are saved to `runs/diagnostics/`.
 
 | Plot file | Description |
 |-----------|-------------|
-| `t2m_step*.png` | 2 m temperature — Forecast / ERA5 / Error |
+| `rmse_vs_lead_time.png` | **Forecast error growth vs. lead time** (Z500, T850, T2m, 10m wind) |
+| `t2m_step*.png` | 2 m temperature — Forecast / ERA5 / Error (steps 0..3) |
 | `z500_step*.png` | 500 hPa geopotential height |
 | `t850_step*.png` | 850 hPa temperature |
 | `q700_step*.png` | 700 hPa specific humidity |
@@ -108,23 +111,38 @@ Plots are saved to `runs/diagnostics/`.
 | `rmse_by_pressure_level.png` | RMSE vs. pressure level profile |
 | `zonal_mean_temperature_step*.png` | Zonal-mean T cross-section (lat × pressure) |
 
-### Useful options
+---
+
+## 5. Synthetic Anomaly & Increment Retention Experiment (Exp 2 / S0)
+
+Tests the core scientific hypothesis from `PROJECT_PLAN_LEAN.md`:
+> *"Does GraphCast retain an inserted surface temperature increment ($\Delta T_{2m}$), or does initialization shock wipe it out in the early forecast hours?"*
 
 ```bash
-# Plot only the first lead time (+6 h)
-python scripts/plot_diagnostics.py --step 0
-
-# Use custom input files
-python scripts/plot_diagnostics.py \
-    --predictions runs/my_experiment/predictions.nc \
-    --truth runs/my_experiment/era5_truth.nc \
-    --outdir runs/my_experiment/diagnostics/
-
-# Higher-resolution figures for publication
-python scripts/plot_diagnostics.py --dpi 300
+python scripts/test_retention.py
 ```
 
-## 5. Submit a batch job
+Options:
+```bash
+# Custom amplitude or location:
+python scripts/test_retention.py --amplitude 2.0 --lat 38.0 --lon 265.0 --steps 4
+```
+
+### What it produces in `runs/retention/`:
+
+| File / Plot | What it shows |
+|---|---|
+| `retention_decay_curve.png` | **Retention metric $R(t) = \frac{\langle \Delta F(t), \Delta X \rangle}{\|\Delta X\|^2}$** over lead time (0h to 24h) |
+| `retention_spatial_evolution.png` | 5-panel evolution ($t=0\text{h}$, $+6\text{h}$, $+12\text{h}$, $+18\text{h}$, $+24\text{h}$) showing anomaly advection and dispersion |
+| `vertical_response_profile.png` | Column temperature response $\Delta T(p)$ showing boundary layer coupling |
+| `surface_wind_mslp_coupling.png` | Induced geostrophic/thermal wind and $\Delta\text{MSLP}$ adjustments |
+| `retention_experiment.nc` | Full 4D difference dataset ($\Delta = F_{\text{pert}} - F_{\text{base}}$) |
+| `retention_summary.txt` | Quantitative retention table by lead hour |
+
+---
+
+## 6. Submit a batch job
+
 
 For longer runs, use the SLURM batch script instead of an interactive session:
 
