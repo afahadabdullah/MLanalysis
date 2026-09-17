@@ -18,57 +18,89 @@ ssh <user>@adapt.nccs.nasa.gov       # or adaptlogin.nccs.nasa.gov
 ssh gpulogin1                        # Prism GPU login node
 ```
 
-## 2. Pick a work area and check quotas
-```bash
-# confirm your actual paths with NCCS docs / `showquota`
-export PROJ=/explore/nobackup/people/$USER/mlanalysis    # verify this path exists for your account
-mkdir -p $PROJ/{code,data,runs,envs}
-mkdir -p /lscratch/$USER
-```
-Keep the git repo and code in `$PROJ/code`, inputs in `$PROJ/data`, and forecasts in `$PROJ/runs`. Never put large data in `$HOME`.
+## 2. Everything lives in the repo
 
-## 3. Interactive GPU session (for setup and the first runs)
+The cloned repo is the project root:
+
 ```bash
-salloc -G1 -t 120 -n1 -c8 --mem=64G          # a V100 node
-# or, for an A100:
-salloc -G1 -t 120 -p dgx -c16 --mem=100G
-nvidia-smi                                    # confirm the GPU is visible
+export PROJ=$HOME/project/MLanalysis     # /home/afahad/project/MLanalysis
+cd $PROJ
 ```
 
-## 4. Build the Python environment
+Layout (created by `scripts/setup_env.sh`):
+
+```text
+MLanalysis/
+  envs/gc/            conda environment (git-ignored)
+  .conda_pkgs/ .pip_cache/   caches, kept out of $HOME (git-ignored)
+  data/params  data/stats  data/sample       model weights + official example
+  data/era5  data/merra2  data/obs           inputs
+  runs/  results/  logs/                     outputs (git-ignored)
+  configs/  src/  scripts/                   code (committed)
+```
+
+`.gitignore` already excludes `envs/`, caches, `data/`, `runs/`, and logs, so only code and documents are committed.
+
+**Quota warning.** This puts the environment (several GB) and all data under `$HOME`. Check your home quota first:
+
+```bash
+showquota 2>/dev/null || quota -s
+du -sh $PROJ
+```
+
+If home is tight, keep the layout but point the heavy directories at `nobackup` with symlinks, so paths in the code never change:
+
+```bash
+NB=/explore/nobackup/people/$USER/mlanalysis    # verify this path for your account
+mkdir -p $NB/{data,runs,envs}
+mv $PROJ/data $NB/ 2>/dev/null || true
+ln -s $NB/data $PROJ/data
+ln -s $NB/runs $PROJ/runs
+```
+
+## 3. Build the environment (login node, needs internet)
+
+```bash
+ssh adapt.nccs.nasa.gov     # then: ssh gpulogin1
+cd $HOME/project/MLanalysis
+bash scripts/setup_env.sh
+```
+
+The script creates `envs/gc` with Python 3.11, JAX (CUDA 12), GraphCast and the data stack, and keeps all caches inside the repo. Activate it later with:
+
 ```bash
 module load miniforge
-conda create -p $PROJ/envs/gc python=3.11 -y
-conda activate $PROJ/envs/gc
-
-# JAX with CUDA 12 (V100 = sm_70, A100 = sm_80; both supported)
-pip install --upgrade "jax[cuda12]"
-python -c "import jax; print(jax.devices())"   # must list a CUDA device, not CPU
-
-# GraphCast and its dependencies
-pip install dm-haiku chex jraph trimesh xarray netcdf4 zarr gcsfs dask cartopy pandas scipy
-pip install git+https://github.com/google-deepmind/graphcast.git
+source activate $HOME/project/MLanalysis/envs/gc
 ```
-If a package fails to build, use an NVIDIA JAX container instead:
+
+On the login node `jax.devices()` shows CPU only. That is expected.
+
+## 4. Get the weights and the official sample (login node)
+
 ```bash
-export SINGULARITY_TMPDIR=/lscratch/$USER SINGULARITY_CACHEDIR=/lscratch/$USER
-singularity exec --nv -B $PROJ jax.sif python -c "import jax; print(jax.devices())"
+bash scripts/download_data.sh
 ```
 
-**Network note:** compute nodes may have no outbound internet. Do every download (pip, model weights, ERA5/MERRA-2 data) on the login node, then run offline. If pip is blocked even there, ask NCCS about the proxy settings.
+It lists the exact GraphCast_small checkpoint, the three normalization files and the matching 1° / 13-level sample in the public `dm_graphcast` bucket, then prints the `wget` lines to run. Afterwards, pin the checkpoint:
 
-## 5. Get the model weights and sample data
-From the public `dm_graphcast` bucket (login node):
 ```bash
-cd $PROJ/data && mkdir -p params stats sample
-BASE=https://storage.googleapis.com/dm_graphcast
-# exact filenames: list the bucket first, they include the config in the name
-pip install gsutil && gsutil ls gs://dm_graphcast/params/ | grep -i small
-wget -P params "$BASE/params/<GraphCast_small ... .npz>"
-for f in diffs_stddev_by_level.nc mean_by_level.nc stddev_by_level.nc; do wget -P stats "$BASE/stats/$f"; done
-gsutil ls gs://dm_graphcast/dataset/ | grep -i "res-1.0" | head      # a matching 1° sample
+sha256sum data/params/*.npz | tee data/params/CHECKSUMS.txt
 ```
-Record the checkpoint filename, its SHA256, and the download date in `runs.csv`. This is the pinned checkpoint for the whole project.
+
+Record the filename, hash and date in `runs.csv`. This is the checkpoint for the whole project.
+
+**Network note:** compute nodes (like `gpu004`) may have no outbound internet. Do all downloads — pip, weights, ERA5, MERRA-2, station data — on the login node, then run offline.
+
+## 5. Get a GPU and check it
+
+```bash
+salloc -G1 -t 120 -c8 --mem=64G          # V100 node
+# or an A100:  salloc -G1 -t 120 -p dgx -c16 --mem=100G
+module load miniforge && source activate $PROJ/envs/gc
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+nvidia-smi
+python -c "import jax; print(jax.devices())"   # must list a CUDA device here
+```
 
 ## 6. Reproduce the official example (the real milestone)
 1. Run the GraphCast demo notebook logic as a script, on the downloaded 1° sample, for a few steps.
@@ -85,6 +117,8 @@ Record, for one 5-day forecast (20 steps):
 Roughly 2,000 five-day forecasts are planned, so per-forecast cost decides whether they run one at a time or batched.
 
 ## 8. Batch template
+`scripts/gpu_job.sh` is ready to submit (`sbatch scripts/gpu_job.sh`):
+
 ```bash
 #!/bin/bash
 #SBATCH --job-name=gc_run
@@ -94,20 +128,20 @@ Roughly 2,000 five-day forecasts are planned, so per-forecast cost decides wheth
 #SBATCH -t 04:00:00
 #SBATCH -o %x_%j.out
 module load miniforge
-conda activate /explore/nobackup/people/$USER/mlanalysis/envs/gc
+source activate $HOME/project/MLanalysis/envs/gc
 export XLA_PYTHON_CLIENT_PREALLOCATE=false      # avoids JAX grabbing the whole GPU
-cd $PROJ/code
-srun python run.py --config config.yaml --dates $DATE_LIST --treatments E,M,E-DIR,E-BAL,E-NUD
+cd $PROJ
+srun python src/run.py --config configs/config.yaml --dates $DATE_LIST --treatments E,M,E-DIR,E-BAL,E-NUD
 ```
 Notes:
 - Keep one process per GPU. Loop dates *inside* the process so the model compiles once.
-- Write to `/lscratch/$USER` during the job, then copy the small output to `$PROJ/runs` at the end.
+- Write bulky intermediates to `/lscratch/$USER` during the job, then copy the small output into `runs/` at the end.
 - Use job arrays (`#SBATCH -a 0-9`) across date blocks, not across single forecasts.
 
 ## 9. Checklist before Experiment S0
 - [ ] `jax.devices()` shows a GPU on a compute node
 - [ ] Official sample reproduced, tolerance recorded
-- [ ] Checkpoint filename + hash + date in `runs.csv`
+- [ ] Checkpoint filename + hash + date in `runs.csv` (`data/params/CHECKSUMS.txt`)
 - [ ] Your ERA5 adapter reproduces that same forecast
 - [ ] Timing and memory recorded for V100 and A100
 - [ ] A 5-day forecast runs end-to-end from a batch script
