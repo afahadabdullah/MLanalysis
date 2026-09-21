@@ -113,10 +113,11 @@ if not all_lines:
 df = pd.read_csv(
     io.StringIO("".join(all_lines)),
     sep=r"\s+",
-    names=COL_NAMES,
-    usecols=["WBANNO", "UTC_DATE", "UTC_TIME", "LONGITUDE", "LATITUDE", "AIR_TEMPERATURE"],
-    dtype={"WBANNO": str, "UTC_DATE": str, "UTC_TIME": str},
+    header=None,
+    usecols=[0, 1, 2, 6, 7, 8],
+    dtype={0: str, 1: str, 2: str, 6: float, 7: float, 8: float},
 )
+df.columns = ["WBANNO", "UTC_DATE", "UTC_TIME", "LONGITUDE", "LATITUDE", "AIR_TEMPERATURE"]
 
 # Filter missing values (-9999.0)
 df = df[df["AIR_TEMPERATURE"] > -90.0].copy()
