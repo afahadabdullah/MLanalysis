@@ -144,11 +144,14 @@ with open(os.path.join(STATS_DIR, "stddev_by_level.nc"), "rb") as f:
 # 2. Prepare Nature Run (Ground Truth)
 # ---------------------------------------------------------------------------
 print(f"\n[2/6] Loading Nature Run dataset ...")
-with open(SAMPLE_FILE, "rb") as f:
+try:
+    example_batch = xr.load_dataset(SAMPLE_FILE, decode_timedelta=True).compute()
+except Exception:
     try:
-        example_batch = xr.load_dataset(f, decode_timedelta=True).compute()
+        example_batch = xr.load_dataset(SAMPLE_FILE).compute()
     except Exception:
-        example_batch = xr.load_dataset(f).compute()
+        with open(SAMPLE_FILE, "rb") as f:
+            example_batch = xr.load_dataset(f).compute()
 
 eval_inputs_nature, eval_targets_nature, eval_forcings = data_utils.extract_inputs_targets_forcings(
     example_batch,

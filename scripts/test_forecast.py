@@ -116,11 +116,14 @@ print("      Stats loaded successfully.")
 
 # 4. Load sample batch and extract inputs, targets, forcings
 print(f"\n[3/5] Loading sample dataset: {os.path.basename(SAMPLE_FILE)} ...")
-with open(SAMPLE_FILE, "rb") as f:
+try:
+    example_batch = xr.load_dataset(SAMPLE_FILE, decode_timedelta=True).compute()
+except Exception:
     try:
-        example_batch = xr.load_dataset(f, decode_timedelta=True).compute()
+        example_batch = xr.load_dataset(SAMPLE_FILE).compute()
     except Exception:
-        example_batch = xr.load_dataset(f).compute()
+        with open(SAMPLE_FILE, "rb") as f:
+            example_batch = xr.load_dataset(f).compute()
 
 
 print(f"\nTarget forecast horizon: {STEPS} steps ({STEPS * 6} hours)")

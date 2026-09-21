@@ -99,6 +99,8 @@ parser.add_argument("--proj", default=os.environ.get("PROJ", "/home/afahad/proje
                     help="Project root directory")
 parser.add_argument("--outdir", default=None,
                     help="Directory for outputs and plots (default: <PROJ>/runs/retention)")
+parser.add_argument("--sample", default=None,
+                    help="Path to custom sample dataset NetCDF (default: data/sample/source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc)")
 parser.add_argument("--dpi", type=int, default=150, help="Figure DPI (default: 150)")
 args = parser.parse_args()
 
@@ -112,7 +114,7 @@ PARAMS_FILE = os.path.join(
     "GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - mesh 2to5 - precipitation input and output.npz",
 )
 STATS_DIR = os.path.join(DATA_DIR, "stats")
-SAMPLE_FILE = os.path.join(
+SAMPLE_FILE = args.sample or os.path.join(
     DATA_DIR, "sample",
     "source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc",
 )
@@ -148,11 +150,14 @@ with open(os.path.join(STATS_DIR, "stddev_by_level.nc"), "rb") as f:
 # 2. Load Sample Data & Prepare Baseline Inputs
 # ---------------------------------------------------------------------------
 print(f"\n[2/6] Loading dataset and extracting baseline inputs ...")
-with open(SAMPLE_FILE, "rb") as f:
+try:
+    example_batch = xr.load_dataset(SAMPLE_FILE, decode_timedelta=True).compute()
+except Exception:
     try:
-        example_batch = xr.load_dataset(f, decode_timedelta=True).compute()
+        example_batch = xr.load_dataset(SAMPLE_FILE).compute()
     except Exception:
-        example_batch = xr.load_dataset(f).compute()
+        with open(SAMPLE_FILE, "rb") as f:
+            example_batch = xr.load_dataset(f).compute()
 
 eval_inputs, eval_targets, eval_forcings = data_utils.extract_inputs_targets_forcings(
     example_batch,
