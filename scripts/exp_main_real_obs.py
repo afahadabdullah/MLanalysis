@@ -107,6 +107,8 @@ ap.add_argument("--superob", type=int, default=1, help="Average stations within 
 ap.add_argument("--max-dz", type=float, default=600.0, help="Reject stations |elev - model orog| > this (m)")
 ap.add_argument("--allow-no-elev", action="store_true", help="Keep stations with unknown elevation (no height correction)")
 ap.add_argument("--lapse", type=float, default=6.5, help="Lapse rate for station height correction (K/km)")
+ap.add_argument("--verify-max-dz", type=float, default=150.0,
+                help="Verification stations only where |station elev - model orog| < this (m); limits lapse-rate error")
 ap.add_argument("--regress-region", default="conus-past", choices=["conus-past", "outside"],
                 help="conus-past: CONUS land background errors at t0-18h/t0-12h; outside: NH land outside CONUS at t0-6h/t0")
 ap.add_argument("--fix-weights", default="1.0,0.6,0.2", help="Fixed column weights at 1000,925,850 hPa for COL-FIX/BAL-FIX")
@@ -303,7 +305,7 @@ if args.base == "era5":
     BASE_A, BASE_B = TRUE_A, TRUE_B
 else:
     BASE_A, BASE_B = BG_A, BG_B
-print(f"   background 2t error at t0 (CONUS): {wrms(BG_B['2m_temperature']-TRUE_B['2m_temperature'], CONUS):.3f} K")
+print(f"   background 2t error at t0 (CONUS land): {wrms(BG_B['2m_temperature']-TRUE_B['2m_temperature'], CONUS_LAND):.3f} K")
 
 # =============================================================================
 # 4. Observations (real or synthetic), H operator, QC and OI
@@ -363,7 +365,8 @@ if args.obs_source == "era5-synth":
     cand = np.argwhere(CONUS_LAND)
     pick = cand[RNG.choice(len(cand), size=min(args.n_obs, len(cand)), replace=False)]
     rows = []
-    for i, t in zip(OBS_IDX, OBS_TIMES):
+    for i in range(len(DATETIMES)):
+        t = pd.Timestamp(DATETIMES[i])
         v = era5_frame(i)["2m_temperature"][pick[:, 0], pick[:, 1]] + RNG.normal(0, SIGMA_O, len(pick))
         rows.append(pd.DataFrame(dict(sid=[f"g{a}_{b}" for a, b in pick], lat=LATS[pick[:, 0]],
                                       lon=LONS[pick[:, 1]], elev=ZMOD[pick[:, 0], pick[:, 1]], time=t, t2m_K=v)))
@@ -398,6 +401,10 @@ RNG.shuffle(sids)
 n_hold = int(round(args.withheld_frac * len(sids)))
 HOLD_SIDS, USE_SIDS = set(sids[:n_hold]), set(sids[n_hold:])
 print(f"   stations after QC: {len(sids)} (used {len(USE_SIDS)}, withheld {len(HOLD_SIDS)})")
+_hv = ALLDF[ALLDF.sid.isin(HOLD_SIDS)]
+_hv = _hv.drop_duplicates("sid")
+_dz = _hv.elev.values - interp2(ZMOD, _hv.lat.values, _hv.lon.values)
+print(f"   withheld stations usable for verification (|dz| < {args.verify_max_dz:.0f} m): {int((np.abs(np.nan_to_num(_dz, nan=1e9)) < args.verify_max_dz).sum())}")
 
 # independent verification network (USCRN) — never inserted
 VER = None
@@ -408,7 +415,8 @@ if args.obs_source != "uscrn":
         vz = VER.elev.values - interp2(ZMOD, VER.lat.values, VER.lon.values)
         VER["y"] = VER.t2m_K.values + np.where(np.isfinite(vz), GAMMA * vz, 0.0)
         VER = VER[~(np.abs(np.nan_to_num(vz)) > args.max_dz)]
-        print(f"   verification: USCRN {VER.sid.nunique()} stations ({os.path.basename(vpath)})")
+        _v1 = VER.drop_duplicates("sid"); _vz = _v1.elev.values - interp2(ZMOD, _v1.lat.values, _v1.lon.values)
+        print(f"   verification: USCRN {VER.sid.nunique()} stations, {int((np.abs(_vz) < args.verify_max_dz).sum())} with |dz| < {args.verify_max_dz:.0f} m ({os.path.basename(vpath)})")
     else:
         print("   verification: no USCRN file found (station verification skipped)")
 else:
@@ -468,10 +476,25 @@ def oi_increment(bg2t, idx, tag=""):
     return inc.astype(np.float32)
 
 
+def _vfilter(df):
+    if df is None or df.empty:
+        return df
+    dz = df.elev.values - interp2(ZMOD, df.lat.values, df.lon.values)
+    return df[~(np.abs(np.nan_to_num(dz, nan=1e9)) > args.verify_max_dz)]
+
+
 def station_rmse(field2t, df):
+    df = _vfilter(df)
     if df is None or df.empty:
         return np.nan
     return float(np.sqrt(np.mean((interp2(field2t, df.lat.values, df.lon.values) - df.y.values) ** 2)))
+
+
+def station_bias(field2t, df):
+    df = _vfilter(df)
+    if df is None or df.empty:
+        return np.nan
+    return float(np.mean(interp2(field2t, df.lat.values, df.lon.values) - df.y.values))
 
 
 # =============================================================================
@@ -617,16 +640,18 @@ for name in ARMS:
     for k, lead in enumerate(LEADS):
         f, tr = pred_frame(FC[name], k), era5_frame(I0 + 1 + k)
         ROWS.append(dict(arm=name, lead_h=lead,
-                         rmse_t2m_conus=wrms(f["2m_temperature"] - tr["2m_temperature"], CONUS),
+                         rmse_t2m_conus=wrms(f["2m_temperature"] - tr["2m_temperature"], CONUS_LAND),
                          rmse_t850_conus=wrms(f["temperature"][L850] - tr["temperature"][L850], CONUS),
                          rmse_z500_down=wrms((f["geopotential"][L500] - tr["geopotential"][L500]) / G, DOWNSTREAM),
+                         bias_t2m_uscrn=station_bias(f["2m_temperature"],
+                                                     None if VER is None else VER[VER.time == pd.Timestamp(DATETIMES[I0 + 1 + k])]),
                          rmse_t2m_uscrn=station_rmse(f["2m_temperature"],
                                                      None if VER is None else VER[VER.time == pd.Timestamp(DATETIMES[I0 + 1 + k])]),
                          rmse_t2m_withheld=station_rmse(f["2m_temperature"], ALLDF[(ALLDF.time == pd.Timestamp(DATETIMES[I0 + 1 + k]))
                                                                                    & ALLDF.sid.isin(HOLD_SIDS)])))
 SC = pd.DataFrame(ROWS)
 NOISE = pd.DataFrame([dict(lead_h=lead,
-                           conus_rms_2t=wrms(pred_frame(NOISE_FC, k)["2m_temperature"] - pred_frame(FC["ERA5"], k)["2m_temperature"], CONUS))
+                           conus_rms_2t=wrms(pred_frame(NOISE_FC, k)["2m_temperature"] - pred_frame(FC["ERA5"], k)["2m_temperature"], CONUS_LAND))
                       for k, lead in enumerate(LEADS)])
 NOISE.to_csv(os.path.join(OUT, "noise_floor.csv"), index=False)
 for m in ("rmse_t2m_conus", "rmse_t850_conus", "rmse_z500_down", "rmse_t2m_uscrn", "rmse_t2m_withheld"):
@@ -660,7 +685,7 @@ for name, (A, B) in ARMS.items():
     f6 = pred_frame(FC[name], 0)
     T0ROWS.append(dict(
         arm=name,
-        t0_err_t2m_conus=wrms(e2, CONUS),
+        t0_err_t2m_conus=wrms(e2, CONUS_LAND),
         t0_err_withheld_obs=station_rmse(B["2m_temperature"], obs_at(I0, "hold")),
         t0_err_uscrn=station_rmse(B["2m_temperature"],
                                   None if VER is None else VER[VER.time == pd.Timestamp(DATETIMES[I0])]),
@@ -767,7 +792,7 @@ savefig(fig, "fig2_vertical_profiles.png")
 fig, axs = plt.subplots(1, 5, figsize=(27, 5))
 for ax, m, ttl in zip(axs, ["rmse_t2m_withheld", "rmse_t2m_uscrn", "rmse_t2m_conus", "rmse_t850_conus", "rmse_z500_down"],
                       ["2 m T RMSE vs WITHHELD stations (K)", "2 m T RMSE vs USCRN stations (K)",
-                       "CONUS 2 m T RMSE vs ERA5 grid (K)", "CONUS T850 RMSE vs ERA5 (K)",
+                       "CONUS-land 2 m T RMSE vs ERA5 grid (K)", "CONUS T850 RMSE vs ERA5 (K)",
                        "Z500 RMSE vs ERA5, CONUS+downstream (m)"]):
     for a in ORDER:
         s = SC[SC.arm == a]

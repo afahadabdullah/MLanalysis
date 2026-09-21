@@ -594,3 +594,46 @@ Two practical points. **Station verification has an error floor** (point vs 1° 
 2. Rerun `era5-synth`, `isd`, `isd --base era5`; confirm the printed `rerun_max_2t_K` ≈ 0 (else read results against `noise_floor.csv`).
 3. Read the **withheld-station** and **USCRN** tables first; the ERA5-grid table second.
 4. Check the new regression table (conus-past) and the COL-FIX/BAL-FIX arms for the depth question.
+
+---
+
+## 17. Twin control after the determinism fix (era5-synth, base = GraphCast 24 h background)
+
+Run 2018-01-15 12 UTC, 11 arms, 72 h. **Reruns now identical (noise floor 0.000 K)**, so differences between arms are real for this case. It is still one case.
+
+### 17.1 Result (truth = ERA5; % error reduction in CONUS 2 m T vs BASE, and gap closed toward the ERA5 start)
+
+| Arm | +6 h | +24 h | +48 h | +72 h | Reading |
+|---|---|---|---|---|---|
+| DIR-1F (surface, t0 only) | **8.0 % / 30 %** | 2.1 / 13 | −1.5 / −8 | 0.2 / 1 | best at 6 h, gone by 24 h, slightly harmful at 48 h |
+| DIR-2F (surface, both frames) | 5.5 / 20 | 1.3 / 8 | −1.6 / −9 | 0.2 / 1 | same shape, weaker |
+| COL-2F / BAL-2F / REG-2F (regressed column) | 3.8–4.5 / 14–17 | 1.8–2.1 / 11–13 | −1.0 to −0.3 | ~0.5 | close to DIR (regressed weights are small) |
+| **COL-FIX** (1.0/0.6/0.2 column) | 2.2 / 8 | 2.4 / 15 | **1.3 / 7** | **2.4 / 11** | weak early, **only arm clearly positive at 48–72 h** |
+| BAL-FIX (fixed column + Z) | 0.0 / 0 | 2.7 / 16 | 0.6 / 3 | 1.3 / 6 | as COL-FIX, Z adds nothing here |
+| NUD-DIR | 5.9 / 22 | 2.5 / 16 | 0.3 / 1 | 0.9 / 4 | good early and at 24 h |
+| **NUD-BAL** | 5.0 / 19 | **2.9 / 18** | 0.3 / 2 | 0.5 / 2 | **best at 24 h** |
+
+(Columns give "% error reduction / % gap closed". Scores were over the CONUS box *including ocean*, which dilutes all numbers because stations only correct land; the script now scores 2 m T over **CONUS land** — rerun for the final values.)
+
+### 17.2 What it means
+
+1. **Early vs. late trade-off.** Surface-only insertion gives the biggest gain in the first 6–12 h and then decays to zero or slightly negative by 48 h. Deep (fixed-profile) insertion gives little at 6 h but is the only approach still helping at 48–72 h. Nudging sits between and is best at 24 h. This matches the retention results (§12–13): depth governs persistence.
+2. **Balance (Z update) adds nothing measurable in this case**; depth and nudging matter, the hypsometric Z does not.
+3. **The statistical (regressed) column is too weak to matter:** background 2 m errors carry little information about errors aloft, so COL/BAL/REG ≈ DIR. The benefit at long leads comes from *assumed* boundary-layer coupling (FIX) or from the model itself (NUD).
+4. **Magnitudes are small**, because the t0 correction is small: 210 synthetic stations remove only ~19 % of the background 2 m error over the CONUS box (partly an ocean-dilution artefact, fixed). Larger or denser increments are needed to see how far the ranking holds.
+
+### 17.3 USCRN in the twin: why station scores looked contradictory
+
+Against USCRN, even the ERA5 start is barely better than the background (+9 % at 6 h, −7 % at 12 h) and ERA5 itself has a **2.8 K error at USCRN at t0**. At 12 UTC in January (pre-dawn inversions), point stations vs 1° grid cells plus a fixed 6.5 K/km height correction produce an error floor larger than the differences between arms. So pulling the state toward ERA5 (the twin) can make USCRN scores *worse*.
+
+Fixes now in the script:
+- verification stations restricted to **|station elevation − model orography| < 150 m** (`--verify-max-dz`),
+- **bias** at USCRN reported alongside RMSE,
+- synthetic observations generated at every frame, so withheld-station scores exist in the twin too (they were NaN).
+
+With only ~15–40 USCRN stations passing the height filter, **station scores need many cases** before they can rank methods; on single cases rely on the twin for ranking and on stations for the sign of the real-data effect.
+
+### 17.4 Next
+1. Rerun era5-synth and isd with the updated script (CONUS-land scoring, height-filtered verification).
+2. Add 10 dates (both 00 and 12 UTC, winter and summer) — the early/late trade-off and the NUD-BAL 24 h lead are the claims to test.
+3. Sweep observation density (`--n-obs` 300 / 800 / all land) in the twin to test whether the ranking depends on increment size.
