@@ -313,3 +313,73 @@ python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --lon
     --outdir runs/exp_main/20180115T12_isd_bg_mlda
 ```
 Check first in the log: the **gradient self-test** (`step32_vs_fwd_bf16_conus_rms_2t_K` should be small, ~0.01–0.1 K; `jvp_vs_fd_T925_rel_err` < 0.2), the **JAC profile** (mean dT(p)/dT₂ₘ over CONUS land — the model's own vertical spreading, to compare with the regression 0.44/0.24/0 and the fixed 1.0/0.6/0.2), and the **4D-Var cost reduction** (J₀ → J_final).
+
+---
+
+## 13. Roadmap after the 4D-Var / JAC runs (23 Sep 2026)
+
+Order: finish §12 (4D-Var/JAC with the t0-relax fix) → **Step 5** static covariances → **Step 6** full 4D-Var → **Step 7** a second reanalysis (MERRA-2) as provider → Step 8 multi-date confirmation → Step 9 ensembles.
+
+### Step 5 — Static multivariate covariances from GraphCast (NMC method)
+- Run GraphCast_small 48 h and 24 h forecasts valid at the same times for ~30 dates (Dec–Feb 2017/18 and 2016/17, 00 and 12 UTC); the 48 h − 24 h differences sample background error.
+- Estimate: (a) vertical/multivariate regressions of T(p), q(p), u, v, Z(p), MSLP on 2 m T (stratified by 00/12 UTC and stable/mixed PBL); (b) horizontal correlation length per variable; (c) per-variable std for the 4D-Var control (`--fdv-sig`) and the OI (`--oi-L`).
+- Replaces the 2-time regression (R² ≤ 0.33) and the hand-set 4D-Var B. New script `scripts/build_nmc_b.py`; output `data/nmc_b_1deg.nc`, read with `--b-file`.
+
+### Step 6 — Full 4D-Var with GraphCast gradients
+- B from Step 5; window extended to two model steps (t0−18 h … t0, observations at 3 times); ECMWF rule of using observations mainly in the first part of the window tested as an option.
+- Cycled: 4D-Var every 6 h inside the 72 h hybrid chain (not only at the last window), with the ERA5/provider relaxation kept for the upper air.
+- Gradient-tuned settings (method 1): learn α, L, ERA5-relaxation strength per level group, and the B scaling by backpropagating 6–24 h withheld-station error through GraphCast over the development dates.
+
+---
+
+## 14. Step 7 — A second reanalysis (MERRA-2) as the provider analysis, no fine-tuning
+
+**Why:** in practice an organisation cannot start an ERA5-trained model from ERA5 in real time; it uses a *different* analysis (GFS/GDAS, IFS, or at NASA **GEOS-FP**, the real-time sibling of MERRA-2). MERRA-2 is the research stand-in: same GEOS model/GSI family as GEOS-FP, but a foreign analysis for GraphCast. Questions:
+
+1. How large is the **foreign-analysis penalty** (MERRA-2 start vs ERA5 start)?
+2. How much of it is **distributional** (mean/variance/diurnal-cycle differences) vs **information** (a genuinely different estimate of the weather)?
+3. Does **model-consistent replay toward MERRA-2** remove the penalty without fine-tuning?
+4. Can **MERRA-2 + ERA5 together** (two analyses) or **MERRA-2 + own stations** **match or beat the ERA5 start**?
+
+### 14.1 Arms (all 1°, same stations, same verification)
+
+| Arm | Initial state | Tests |
+|---|---|---|
+| `E` | ERA5 start | reference |
+| `M-DIR` | MERRA-2 mapped to GraphCast inputs, used directly | foreign-analysis penalty |
+| `M-MEAN` | MERRA-2 − [clim_M − clim_E] (mean anomaly transplant) | distribution: mean only |
+| `M-QM` | ERA5 climatology + (MERRA-2 − clim_M) · σ_E/σ_M (anomaly + variance mapping) | distribution: mean + variance — the **anomaly-initialization** approach |
+| `REPLAY72-M` | 72 h GraphCast cycle relaxed (full state, τ = 6 h) toward MERRA-2 | does model-consistent replay remove the penalty? |
+| `REPLAY72-MQM` | same, toward M-QM | replay + distribution mapping |
+| `HYB72-MQM` | REPLAY72-MQM + ISD stations each cycle | own obs on a foreign-analysis base |
+| `REPLAY72-BLEND` | relax toward w·ERA5 + (1−w)·M-QM, w = 0.5 (and w tuned on dev dates) | two analyses: can an ensemble of reanalyses beat ERA5? |
+| `HYB72-BLEND` | BLEND + ISD stations | best-possible combination |
+| `M-DIR-OBC` (output-side) | M-DIR forecast minus the lead-dependent mean difference F(M) − F(E) estimated on dev dates | anomaly **forecast** (debias the output instead of the input) |
+
+"Anomaly forecast" is covered two ways: **anomaly initialization** (M-MEAN, M-QM: keep MERRA-2's anomalies, use ERA5's climate, so the state is in-distribution for GraphCast) and **output debiasing** (M-DIR-OBC). Neither retrains the model.
+
+### 14.2 Verification
+- 2 m T at USCRN and withheld ISD (primary), T850/Z500 against ERA5 **and** against MERRA-2 (so ERA5 is not favoured by construction), radiosondes when added.
+- Report each arm vs `E` (can it match/beat ERA5?) and vs `M-DIR` (how much of the foreign penalty is recovered?).
+- Decomposition: distribution part ≈ Err(M-DIR) − Err(M-QM); information part ≈ Err(M-QM) − Err(E); replay part ≈ Err(M-QM) − Err(REPLAY72-MQM).
+
+### 14.3 Data
+| Item | Source | Notes |
+|---|---|---|
+| MERRA-2 3-D | `inst3_3d_asm_Np` (T, U, V, QV, H, OMEGA; 42 levels incl. all 13 GraphCast levels; 3-hourly, 0.5°×0.625°) | on NCCS locally (check ADAPT `/css/merra2/` or Discover `/discover/nobackup/projects/gmao/merra2/`); else GES DISC. H→Z = g·H; OMEGA (Pa/s) = ERA5 `vertical_velocity` units |
+| MERRA-2 2-D | `inst1_2d_asm_Nx` (T2M, U10M, V10M, SLP), `tavg1_2d_flx_Nx` (PRECTOT → 6 h sum) | |
+| Climatologies | ERA5: WeatherBench-2 ERA5 6-hourly climatology (day-of-year × hour); MERRA-2: same statistics from `inst3_3d_asm_Np` 2010–2017, ±15 days around the case date, 00/06/12/18 UTC | mean and std per grid point, level, hour; needed for M-MEAN/M-QM |
+| Window | 12–18 Jan 2018 (same as the ERA5 file) | 26 frames |
+
+Adapter (`scripts/prep_merra2.py`): subset 13 levels, conservative regrid to 1° (0.25° later), **below-ground fill** (MERRA-2 is undefined below the surface; ERA5 extrapolates: fill T with a 6.5 K/km extrapolation from the lowest valid level and Z hypsometrically, q/u/v from the lowest valid level), precipitation to 6 h accumulation, GraphCast schema identical to the ERA5 file, static fields from ERA5. **Validate channel by channel against ERA5 for one date before any forecast** (a unit or fill error looks exactly like a "foreign-analysis penalty").
+
+Code changes in `exp_main_real_obs.py`: `--provider {era5, merra2, qm, blend}` for the relaxation target of REPLAY/HYB, `--provider-file`, `--clim-files`, `--blend-w`; new direct arms `M-DIR`, `M-MEAN`, `M-QM`; output-debias arm.
+
+### 14.4 Expected outcomes and what they mean
+- **M-QM ≈ E:** the foreign penalty is mostly distributional → anomaly initialization lets any organisation use its own analysis with an ERA5-trained model, no fine-tuning needed.
+- **REPLAY72-M ≈ E but M-DIR ≪ E:** replay (model-consistent insertion) removes the penalty → the IAU/replay principle is the fix for foreign analyses (the original project question, now with a foreign analysis where the effect should be larger than with ERA5).
+- **REPLAY72-BLEND or HYB72-BLEND < E:** two analyses plus the model's own consistency beat the training analysis → the most practical route to "better than ERA5" for a real-time system (e.g. GEOS-FP + GFS + own stations).
+- **Nothing recovers the penalty:** information difference dominates → fine-tuning would not help either; only better analyses/observations would.
+
+### 14.5 Real-time follow-on
+Repeat the best configuration with **GEOS-FP** (real-time GEOS analyses on NCCS) as the provider for a recent period, i.e. an actual real-time Mode A system at NASA.

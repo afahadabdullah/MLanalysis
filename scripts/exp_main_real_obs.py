@@ -152,13 +152,15 @@ ap.add_argument("--bias-mode", default="station-hour", choices=["station", "stat
 ap.add_argument("--bias-gamma", type=float, default=0.2, help="BC: update weight per cycle (EW average)")
 ap.add_argument("--jac-k", type=int, default=8, help="JAC: random surface perturbations for the model-Jacobian balance")
 ap.add_argument("--jac-smooth-km", type=float, default=500.0, help="JAC: local-regression smoothing length (km)")
-ap.add_argument("--fdv-iter", type=int, default=20, help="4DV: L-BFGS iterations")
+ap.add_argument("--fdv-iter", type=int, default=40, help="4DV: max L-BFGS iterations (total over restarts)")
 ap.add_argument("--fdv-L", type=float, default=300.0, help="4DV: background-error correlation length (km)")
 ap.add_argument("--fdv-sig", default="2m_temperature=1.5,temperature=1.0,specific_humidity=0.0005,"
                                     "u_component_of_wind=1.5,v_component_of_wind=1.5,geopotential=50",
                 help="4DV: background-error std per control variable (K, kg/kg, m/s, m2/s2)")
-ap.add_argument("--fdv-era5-weight", type=float, default=1.0,
-                help="HYB-4DV: weight of the ERA5 anchor term at t0 (0 = off)")
+ap.add_argument("--fdv-era5-weight", type=float, default=None,
+                help="HYB-4DV: weight of the ERA5 anchor term at t0 (default: 0 when --fdv-relax-t0 1, else 1)")
+ap.add_argument("--fdv-restarts", type=int, default=3,
+                help="4DV: restart L-BFGS from the current point if it stops early (line-search failure)")
 ap.add_argument("--fdv-relax-t0", type=int, default=1,
                 help="HYB-4DV: launch t0 frame = relax_ERA5(F(x_b)) + [F(x_a) - F(x_b)], i.e. the same ERA5 "
                      "anchoring as HYB-DIR at t0 plus the model-evolved 4D-Var increment (1), or raw F(x_a) (0)")
@@ -1297,38 +1299,69 @@ if _need_jac or _need_4dv:
                         X[v] = X[v].at[jnp.asarray(lev), R0:R1, C0:C1].add(inc)
             return A, B
 
-        def cost(z):
+        W_ERA5 = args.fdv_era5_weight if args.fdv_era5_weight is not None else (0.0 if relax_t0 is not None else 1.0)
+        N_OBS = float(sum(len(o[0]) for o in obs_terms))
+
+        def cost_parts(z):
             A, B = analysed(z)
             C = step(A, B)
-            J = 0.5 * jnp.sum(z * z)
-            for (y, so2, ii), fld in zip(obs_terms, (B["2m_temperature"], C["2m_temperature"])):
-                J = J + 0.5 * jnp.sum((_H(fld, ii) - y) ** 2 / so2)
-            if E0 is not None and args.fdv_era5_weight > 0:     # ERA5 anchor at t0 over the control region
+            Jb = 0.5 * jnp.sum(z * z)
+            Jo = [0.5 * jnp.sum((_H(fld, ii) - y) ** 2 / so2)
+                  for (y, so2, ii), fld in zip(obs_terms, (B["2m_temperature"], C["2m_temperature"]))]
+            Ja = 0.0
+            if E0 is not None and W_ERA5 > 0:                  # ERA5 anchor at t0 over the control region
                 for v, lev in ctrl:
                     sig = CTRL_SIG[v]
                     if lev is None:
                         dv = C[v][R0:R1, C0:C1] - E0[v][R0:R1, C0:C1]
                     else:
                         dv = C[v][jnp.asarray(lev), R0:R1, C0:C1] - E0[v][jnp.asarray(lev), R0:R1, C0:C1]
-                    J = J + 0.5 * args.fdv_era5_weight * jnp.sum((dv / sig) ** 2 * mask_box)
-            return J
+                    Ja = Ja + 0.5 * W_ERA5 * jnp.sum((dv / sig) ** 2 * mask_box)
+            return Jb, Jo[0], Jo[1], Ja
+
+        def cost(z):
+            Jb, Jo1, Jo2, Ja = cost_parts(z)
+            return (Jb + Jo1 + Jo2 + Ja) / N_OBS                 # O(1) scaling for the optimizer
 
         vg = jax.jit(jax.value_and_grad(cost))
-        z0 = np.zeros(sum(sizes), np.float32)
+        parts = jax.jit(cost_parts)
+        z = np.zeros(sum(sizes), np.float64)
         hist = []
 
-        def fun(z):
-            J, g = vg(jnp.asarray(z, jnp.float32))
-            hist.append(float(J)); return float(J), np.asarray(g, np.float64)
+        def fun(zz):
+            J, g = vg(jnp.asarray(zz, jnp.float32))
+            hist.append(float(J) * N_OBS)
+            return float(J), np.asarray(g, np.float64)
+
+        def _parts(zz):
+            return [float(x) for x in parts(jnp.asarray(zz, jnp.float32))]
 
         t_ = time.time()
-        res = minimize(fun, z0, jac=True, method="L-BFGS-B", options=dict(maxiter=args.fdv_iter))
-        A_a, B_a = analysed(jnp.asarray(res.x, jnp.float32))
+        P0 = _parts(z)
+        it_total, msgs = 0, []
+        for r in range(1 + max(0, args.fdv_restarts)):
+            left = args.fdv_iter - it_total
+            if left <= 0:
+                break
+            res = minimize(fun, z, jac=True, method="L-BFGS-B",
+                           options=dict(maxiter=left, maxcor=20, maxls=50, ftol=1e-10, gtol=1e-7))
+            z = res.x; it_total += int(res.nit)
+            msgs.append(str(res.message))
+            if res.success and "ABNORMAL" not in str(res.message).upper():
+                break
+            if res.nit == 0:
+                break
+        P1 = _parts(z)
+        A_a, B_a = analysed(jnp.asarray(z, jnp.float32))
         A_a, B_a = _to_np(A_a), _to_np(B_a)
-        FDV_LOG[tag] = dict(J0=hist[0], J_final=hist[-1], n_iter=int(res.nit), n_eval=len(hist),
-                            seconds=round(time.time() - t_, 1),
-                            n_obs=[int(len(o[0])) for o in obs_terms])
-        print(f"   {tag}: J {hist[0]:.1f} -> {hist[-1]:.1f} in {res.nit} iterations ({time.time()-t_:.0f} s)")
+        FDV_LOG[tag] = dict(J0=sum(P0), J_final=sum(P1), n_iter=it_total, n_eval=len(hist),
+                            restarts=len(msgs) - 1, stop=msgs, n_obs=[int(len(o[0])) for o in obs_terms],
+                            Jb=[P0[0], P1[0]], Jo_tm6=[P0[1], P1[1]], Jo_t0=[P0[2], P1[2]], J_era5=[P0[3], P1[3]],
+                            era5_weight=W_ERA5, seconds=round(time.time() - t_, 1))
+        print(f"   {tag}: J {sum(P0):.1f} -> {sum(P1):.1f} in {it_total} iterations, {len(msgs) - 1} restarts "
+              f"({time.time()-t_:.0f} s); stop: {msgs[-1]}")
+        print(f"      Jb 0 -> {P1[0]:.1f} | Jo(t0-6h) {P0[1]:.1f} -> {P1[1]:.1f} | Jo(t0) {P0[2]:.1f} -> {P1[2]:.1f}"
+              f" | J_ERA5 {P0[3]:.1f} -> {P1[3]:.1f}   (N_obs = {int(N_OBS)}; well fitted: Jo ~ N_obs/2 per time)")
         C_a = pred_frame(forecast(A_a, B_a, start, 1), 0)      # launch pair with the operational forward
         if relax_t0 is not None:                                 # HYB-4DV: same t0 anchoring as HYB-DIR
             C_bf = pred_frame(forecast(Ab, Bb, start, 1), 0)
