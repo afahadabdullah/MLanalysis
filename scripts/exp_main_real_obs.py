@@ -161,10 +161,10 @@ ap.add_argument("--fdv-era5-weight", type=float, default=None,
                 help="HYB-4DV: weight of the ERA5 anchor term at t0 (default: 0 when --fdv-relax-t0 1, else 1)")
 ap.add_argument("--fdv-restarts", type=int, default=3,
                 help="4DV: restart L-BFGS from the current point if it stops early (line-search failure)")
-ap.add_argument("--fdv-solver", default="gn", choices=["gn", "lbfgs"],
-                help="4DV minimizer: incremental Gauss-Newton (outer loops re-linearize GraphCast, inner "
-                     "conjugate gradient on the quadratic cost with the tangent-linear/adjoint model; default) "
-                     "or L-BFGS on the full nonlinear cost (old)")
+ap.add_argument("--fdv-solver", default="lbfgs", choices=["gn", "lbfgs"],
+                help="4DV minimizer: L-BFGS on the full nonlinear cost (default; memory-safe on 32GB V100) "
+                     "or incremental Gauss-Newton (outer loops re-linearize GraphCast, inner "
+                     "conjugate gradient on quadratic cost; requires >32GB VRAM like 80GB A100)")
 ap.add_argument("--fdv-outer", type=int, default=3, help="4DV-GN: outer loops (re-linearizations)")
 ap.add_argument("--fdv-inner", type=int, default=40, help="4DV-GN: max inner CG iterations per outer loop")
 ap.add_argument("--fdv-cg-tol", type=float, default=1e-3, help="4DV-GN: relative CG residual tolerance")
