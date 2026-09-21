@@ -148,12 +148,13 @@ ap.add_argument("--proj", default=os.environ.get("PROJ", "/home/afahad/project/M
 ap.add_argument("--outdir", default=None)
 ap.add_argument("--dpi", type=int, default=150)
 ap.add_argument("--skip-checks", action="store_true", help="Skip determinism/consistency checks")
-ap.add_argument("--model", default="small", choices=["small", "large"],
+ap.add_argument("--model", default="small", choices=["small", "large", "operational"],
                 help="small = GraphCast_small (1 deg, 13 levels, ERA5 1979-2015); "
-                     "large = GraphCast (0.25 deg, 37 levels, ERA5 1979-2017)")
+                     "large = GraphCast (0.25 deg, 37 levels, needs >=40GB GPU); "
+                     "operational = GraphCast_operational (0.25 deg, 13 levels, fits in 32GB V100)")
 ap.add_argument("--params", default=None, help="Explicit checkpoint .npz path (overrides --model)")
 ap.add_argument("--lite", type=int, default=None,
-                help="Keep only 2 m T, T850, Z500 from forecasts to save memory (default: on for --model large)")
+                help="Keep only 2 m T, T850, Z500 from forecasts to save memory (default: on for 0.25 deg models)")
 args = ap.parse_args()
 
 MODEL_SPEC = {
@@ -163,9 +164,11 @@ MODEL_SPEC = {
     "large": dict(res="0.25", nlev=37, tag="_r025",
                   ckpt="GraphCast - ERA5 1979-2017 - resolution 0.25 - pressure levels 37 - "
                        "mesh 2to6 - precipitation input and output.npz"),
+    "operational": dict(res="0.25", nlev=13, tag="_r025_oper",
+                        ckpt="GraphCast_operational.npz"),
 }[args.model]
 if args.lite is None:
-    args.lite = 1 if args.model == "large" else 0
+    args.lite = 1 if args.model in ("large", "operational") else 0
 WANT = None if args.arms == "all" else ({"ERA5", "BASE"} | {a.strip() for a in args.arms.split(",")})
 
 
@@ -185,9 +188,14 @@ if args.data:
 else:
     _t_l = dt.datetime.fromisoformat(args.t0) - dt.timedelta(hours=LEAD_BACK_H)
     _stem = f"res-{MODEL_SPEC['res']}_levels-{MODEL_SPEC['nlev']}"
-    _ext = ".zarr" if args.model == "large" else ".nc"
+    _ext = ".zarr" if args.model in ("large", "operational") else ".nc"
     DATA = os.path.join(PROJ, "data", "era5",
                         f"source-era5_date-{_t_l:%Y-%m-%d}_{_stem}_steps-{LEAD_BACK_H // 6 + 12:02d}{_ext}")
+    if args.model == "operational" and not os.path.exists(DATA):
+        _alt = os.path.join(PROJ, "data", "era5",
+                            f"source-era5_date-{_t_l:%Y-%m-%d}_res-0.25_levels-37_steps-{LEAD_BACK_H // 6 + 12:02d}.zarr")
+        if os.path.exists(_alt):
+            DATA = _alt
     if not os.path.exists(DATA) and not args.long_nud:     # fall back to the standard 24 h-window file
         DATA = os.path.join(PROJ, "data", "era5",
                             f"source-era5_date-{t_launch:%Y-%m-%d}_{_stem}_steps-16{_ext}")
@@ -251,8 +259,17 @@ print(f"\n[1] Loading GraphCast ({args.model}: {os.path.basename(PARAMS)}) and n
 with open(PARAMS, "rb") as f:
     ckpt = checkpoint.load(f, graphcast.CheckPoint)
 params, model_config, task_config = ckpt.params, ckpt.model_config, ckpt.task_config
-stats = {n: xr.load_dataset(os.path.join(STATS, f"{n}.nc")).compute()
-         for n in ["diffs_stddev_by_level", "mean_by_level", "stddev_by_level"]}
+TARGET_13 = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+stats_stem = "_025" if args.model in ("large", "operational") else ""
+stats = {}
+for n in ["diffs_stddev_by_level", "mean_by_level", "stddev_by_level"]:
+    p = os.path.join(STATS, f"{n}{stats_stem}.nc")
+    if not os.path.exists(p):
+        p = os.path.join(STATS, f"{n}.nc")
+    ds_s = xr.load_dataset(p).compute()
+    if MODEL_SPEC["nlev"] == 13 and "level" in ds_s and len(ds_s["level"]) > 13 and args.model == "operational":
+        ds_s = ds_s.sel(level=TARGET_13)
+    stats[n] = ds_s
 
 
 def _wrapped(m_cfg, t_cfg):
@@ -290,6 +307,8 @@ else:
         DS = xr.load_dataset(DATA, decode_timedelta=True).compute()
     except Exception:
         DS = xr.load_dataset(DATA).compute()
+if MODEL_SPEC["nlev"] == 13 and "level" in DS and len(DS["level"]) > 13 and args.model == "operational":
+    DS = DS.sel(level=TARGET_13)
 print(f"   model = {args.model} ({os.path.basename(PARAMS)}), lite forecasts = {bool(args.lite)}")
 
 DATETIMES = DS.coords["datetime"].values
