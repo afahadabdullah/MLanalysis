@@ -55,6 +55,7 @@ lat_asc = src.lat.values[0] > src.lat.values[-1]          # ARCO latitude runs 9
 
 def fix(da):
     da = da.sortby("lat") if lat_asc else da
+    da.encoding.clear()
     return da.astype(np.float32)
 
 
@@ -68,7 +69,9 @@ for v in ("geopotential_at_surface", "land_sea_mask"):
     da = src[v]
     if "time" in da.dims:
         da = da.sel(time=t_first)
-    static[v] = fix(da).drop_vars([c for c in fix(da).coords if c not in ("lat", "lon")])
+    da = fix(da).drop_vars([c for c in fix(da).coords if c not in ("lat", "lon")])
+    da.encoding.clear()
+    static[v] = da
 static = static.load()
 
 for i, t in enumerate(frames):
@@ -88,10 +91,18 @@ for i, t in enumerate(frames):
         fr[v] = fr[v].transpose("batch", "time", "lat", "lon")
     fr = fr.assign_coords(datetime=(("batch", "time"), np.array([[tt]], dtype="datetime64[ns]")))
     fr["level"] = fr["level"].astype(np.int32)
+    for v in fr.variables:
+        fr[v].encoding.clear()
     if i == 0:
+        for v in static.variables:
+            static[v].encoding.clear()
         enc = {"time": {"units": "hours", "dtype": "int64"},
                "datetime": {"units": "hours since 1970-01-01 00:00:00", "dtype": "int64"}}
-        xr.merge([fr, static]).to_zarr(out, mode="w", encoding=enc)
+        m = xr.merge([fr, static])
+        for v in m.variables:
+            if v not in enc:
+                m[v].encoding.clear()
+        m.to_zarr(out, mode="w", encoding=enc)
     else:
         fr.to_zarr(out, append_dim="time")
     print(f"  frame {i + 1}/{len(frames)} {t:%Y-%m-%d %H} UTC  {time.time() - t0:.0f} s")
