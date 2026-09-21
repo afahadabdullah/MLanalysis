@@ -554,3 +554,43 @@ python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd      
 python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --base era5
 python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source merra2 --merra2-dir <NCCS MERRA-2 path>
 ```
+
+---
+
+## 16. First real-data runs of the main experiment (2018-01-15 12 UTC) — review
+
+Runs: `era5-synth/bg`, `isd/bg`, `isd/era5` (`runs/exp_main/…`). **Read the caveats first: these numbers are not yet interpretable as a ranking.**
+
+### 16.1 Blocking problems found (fixed in the script, 21 Sep)
+
+| # | Problem | Evidence | Fix |
+|---|---|---|---|
+| **P1** | **GPU non-determinism.** Rerunning the same forecast changed 2 m T by up to 0.27–0.29 K (max) after 12 h; step-by-step vs rollout up to 0.38 K | `rerun_maxdiff_2t_K` 0.25–0.29 in all runs | `XLA_FLAGS=--xla_gpu_deterministic_ops=true` set before JAX import; a second ERA5 forecast is now run every time and its difference is written as a **noise floor** (`noise_floor.csv`, grey band in fig4). Until a run shows reruns ≈ 0, differences between arms of a few tenths of a kelvin are noise |
+| **P2** | **USCRN verification had 0 stations** — all 132 dropped for unknown elevation | "verification: USCRN 0 stations" | `download_uscrn_range.py`: station table cached to `data/obs/uscrn_stations.tsv`, retried, WBAN keys zero-padded, feet→m. **Rerun the downloader** |
+| **P3** | **Wrong yardstick for real observations.** The printed "gap closed" is scored against the ERA5 grid | ISD/bg: gap −36 to −90 % at 6–24 h | Station verification (withheld ISD, USCRN) is now printed first and plotted first; ERA5-grid gap is shown only for `--base bg` and labelled secondary (see §16.3) |
+| **P4** | **Column arms ≈ DIR.** Regression from NH land outside CONUS gave R² 0.23 at 1000 hPa and ≈0 above, so b_T(850) = 0.04: the "column" increment was essentially surface-only | regression table | Default regression now uses **CONUS land background errors at t0−18 h and t0−12 h** (`--regress-region conus-past`); new fixed-profile arms **COL-FIX / BAL-FIX** (1.0/0.6/0.2) test the assumed boundary-layer structure explicitly |
+| **P5** | Gap % meaningless for `--base era5` (division by ~0) | 59194 % etc. | Suppressed; relative error reduction vs BASE reported instead |
+
+### 16.2 What the runs do show (single case, and subject to P1)
+
+- **Real stations make the initial state closer to independent observations.** Withheld ISD error at t0: BASE (GraphCast 24 h background) 2.37 K → **1.92 K** after insertion — lower than **ERA5 itself (2.14 K)**. Inserting ISD into ERA5 also lowered it: 2.14 → 1.91 K. So at t0 the inserted state beats the training analysis at stations it never saw.
+- **The same insertion moves the state *away* from the ERA5 grid** (CONUS 2 m T difference vs ERA5 rises from 1.12 to 1.44 K). This is expected, not a failure: 1° grid values from stations differ from ERA5's grid values (representativeness, lapse-rate correction, ERA5's own 2 m analysis errors). It is exactly why the ERA5-grid "gap" went negative.
+- **Twin control (era5-synth):** insertion closes ~20–30 % of the background–ERA5 gap at 6 h, ~10–15 % at 24 h and ≈0 by 48–72 h. Differences between methods (DIR-1F 30.7 %, NUD-DIR 25.4 %, DIR-2F 21.2 %, BAL 18.1 %) are within the P1 noise and cannot be ranked yet.
+- **The t0 2 m T regression is weak** (R² 0.23 at 1000 hPa): in this background, 2 m errors carry little information about errors aloft. That is itself a finding for the depth question — a statistically estimated column increment is small, so any benefit of depth must come from an assumed (physical) profile or from the model (nudging).
+
+### 16.3 What is "truth" for this experiment
+
+Two references, with different jobs:
+
+| Reference | Use it for | Why |
+|---|---|---|
+| **Independent observations** — withheld 30 % of the inserted network, and **USCRN** (not assimilated, never inserted) | **Primary score for any real-data run** (2 m T at +6…+72 h) | When real observations are inserted, the question is whether the forecast gets closer to the *real atmosphere*. ERA5 is an estimate of it, with its own errors, and it already assimilated ASOS — so scoring against ERA5 rewards staying close to ERA5, not being right |
+| **ERA5 analyses (grid)** | Truth only in the twin (`era5-synth`, by construction); for real data, a secondary check of the large-scale and upper-air fields (T850, Z500) and of whether insertion degrades the rest of the state | ERA5 is the model's training target and the best available gridded upper-air analysis, but it is not the truth at stations |
+
+Two practical points. **Station verification has an error floor** (point vs 1° grid, lapse-rate correction — worst in winter-morning inversions, as at 12 UTC here): all arms share it, so compare arms by *paired differences*, not absolute RMSE. **ASOS stations are in ERA5**: withheld-ISD scores are independent of the inserted subset but not of ERA5 — USCRN is the cleanest check. Radiosondes (IGRA) should be added for T850.
+
+### 16.4 Rerun checklist
+1. Pull the updated scripts; rerun `download_uscrn_range.py` and confirm "Elevation matched for ~110 of ~115 stations".
+2. Rerun `era5-synth`, `isd`, `isd --base era5`; confirm the printed `rerun_max_2t_K` ≈ 0 (else read results against `noise_floor.csv`).
+3. Read the **withheld-station** and **USCRN** tables first; the ERA5-grid table second.
+4. Check the new regression table (conus-past) and the COL-FIX/BAL-FIX arms for the depth question.

@@ -16,3 +16,4 @@ results/figs/
 *.log
 slurm-*.out
 *_*.out
+.trash/

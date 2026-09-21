@@ -63,6 +63,10 @@ import xarray as xr
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+# GraphCast's graph message passing uses scatter-adds that are non-deterministic on GPU
+# unless forced; without this, reruns differ by ~0.3 K and arm differences are noise.
+if "--xla_gpu_deterministic_ops" not in os.environ.get("XLA_FLAGS", ""):
+    os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " --xla_gpu_deterministic_ops=true").strip()
 
 import jax
 import haiku as hk
@@ -102,6 +106,10 @@ ap.add_argument("--merra2-dir", default=None, help="Directory with MERRA2_*.inst
 ap.add_argument("--superob", type=int, default=1, help="Average stations within a 1-deg cell (1/0)")
 ap.add_argument("--max-dz", type=float, default=600.0, help="Reject stations |elev - model orog| > this (m)")
 ap.add_argument("--allow-no-elev", action="store_true", help="Keep stations with unknown elevation (no height correction)")
+ap.add_argument("--lapse", type=float, default=6.5, help="Lapse rate for station height correction (K/km)")
+ap.add_argument("--regress-region", default="conus-past", choices=["conus-past", "outside"],
+                help="conus-past: CONUS land background errors at t0-18h/t0-12h; outside: NH land outside CONUS at t0-6h/t0")
+ap.add_argument("--fix-weights", default="1.0,0.6,0.2", help="Fixed column weights at 1000,925,850 hPa for COL-FIX/BAL-FIX")
 ap.add_argument("--n-obs", type=int, default=300, help="Pseudo-stations for era5-synth")
 ap.add_argument("--withheld-frac", type=float, default=0.3)
 ap.add_argument("--obs-noise", type=float, default=None, help="Obs error std (K); default by source")
@@ -302,7 +310,7 @@ print(f"   background 2t error at t0 (CONUS): {wrms(BG_B['2m_temperature']-TRUE_
 # =============================================================================
 print("\n[4] Observations ...")
 ZMOD = ZSFC / G                                   # model orography (m)
-GAMMA = 0.0065                                    # K/m
+GAMMA = args.lapse / 1000.0                       # K/m
 OBS_IDX = [I0 - 3, I0 - 2, I0 - 1, I0]            # t0-18, -12, -6, t0
 
 
@@ -469,14 +477,20 @@ def station_rmse(field2t, df):
 # =============================================================================
 # 5. Vertical regression (training region outside CONUS)
 # =============================================================================
-print("\n[5] Estimating vertical spreading by regression outside CONUS ...")
+print("\n[5] Estimating vertical spreading by regression of background errors ...")
 x_list, yT, yZ = [], {p: [] for p in LEVELS}, {p: [] for p in LEVELS}
-for idx in (I0 - 1, I0):
+if args.regress_region == "conus-past":
+    # background errors over CONUS land at t0-18h and t0-12h (earlier cycles; no t0 information)
+    REG_IDX, REG_MASK = (I0 - 3, I0 - 2), CONUS_LAND & (ZSFC < 1500.0 * G)
+else:
+    REG_IDX, REG_MASK = (I0 - 1, I0), TRAIN
+print(f"   region: {args.regress_region}  ({int(REG_MASK.sum())} points x {len(REG_IDX)} times)")
+for idx in REG_IDX:
     e = {v: era5_frame(idx)[v] - BG_CHAIN[idx][v] for v in ("2m_temperature", "temperature", "geopotential")}
-    x_list.append(e["2m_temperature"][TRAIN])
+    x_list.append(e["2m_temperature"][REG_MASK])
     for p in LEVELS:
-        yT[p].append(e["temperature"][LIDX[p]][TRAIN])
-        yZ[p].append(e["geopotential"][LIDX[p]][TRAIN])
+        yT[p].append(e["temperature"][LIDX[p]][REG_MASK])
+        yZ[p].append(e["geopotential"][LIDX[p]][REG_MASK])
 X = np.concatenate(x_list); X = X - X.mean()
 BT, BZ, R2T, R2Z = {}, {}, {}, {}
 for p in LEVELS:
@@ -484,7 +498,8 @@ for p in LEVELS:
         yy = yy - yy.mean()
         b = float(np.sum(X * yy) / np.sum(X * X))
         B[p] = b if p >= args.col_top else 0.0
-        R2[p] = float(np.corrcoef(X, yy)[0, 1] ** 2)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            R2[p] = float(np.nan_to_num(np.corrcoef(X, yy)[0, 1] ** 2))
 print("   level  b_T(K/K)  R2_T   b_Z(m2s-2/K)  R2_Z")
 for p in sorted(LEVELS, reverse=True):
     print(f"   {p:5d}  {BT[p]:+7.3f}  {R2T[p]:.2f}   {BZ[p]:+9.2f}    {R2Z[p]:.2f}")
@@ -506,10 +521,20 @@ def hypsometric_phi(dT_by_level):
     return dphi
 
 
+FIXW = dict(zip((1000, 925, 850), [float(x) for x in args.fix_weights.split(",")]))
+
+
 def apply_increment(frame, inc2t, kind, scale=1.0):
     f = copy_frame(frame)
     inc = scale * inc2t
     f["2m_temperature"] += inc
+    if kind in ("COL-FIX", "BAL-FIX"):
+        dT = {p: w * inc for p, w in FIXW.items() if p in LIDX}
+        for p, v in dT.items():
+            f["temperature"][LIDX[p]] += v
+        if kind == "BAL-FIX":
+            for p, v in hypsometric_phi(dT).items():
+                f["geopotential"][LIDX[p]] += v
     if kind in ("COL", "BAL", "REG"):
         dT = {p: BT[p] * inc for p in LEVELS if BT[p] != 0.0}
         for p, v in dT.items():
@@ -535,8 +560,8 @@ if args.base == "bg":
 else:
     ARMS["BASE"] = ARMS["ERA5"]
 ARMS["DIR-1F"] = (BASE_A, apply_increment(BASE_B, INC_B, "DIR"))
-for k in ("DIR", "COL", "BAL", "REG"):
-    ARMS[f"{k}-2F"] = (apply_increment(BASE_A, INC_A, k), apply_increment(BASE_B, INC_B, k))
+for k in ("DIR", "COL", "BAL", "REG", "COL-FIX", "BAL-FIX"):
+    ARMS[f"{k}-2F" if "FIX" not in k else f"{k}"] = (apply_increment(BASE_A, INC_A, k), apply_increment(BASE_B, INC_B, k))
 
 ALPHA = 1.0 - np.exp(-6.0 / args.nud_tau)
 nud_times = OBS_IDX if args.nud_obs == "all" else [I0 - 1, I0]
@@ -561,13 +586,19 @@ CHECKS = {}
 if not args.skip_checks:
     print("\n[7] Consistency checks ...")
     A0, B0 = nudge_chain("DIR", 0.0)
-    CHECKS["stepwise_vs_rollout_maxdiff_2t_K"] = float(np.abs(B0["2m_temperature"] - BG_B["2m_temperature"]).max())
+    dd = B0["2m_temperature"] - BG_B["2m_temperature"]
+    CHECKS["stepwise_vs_rollout_max_2t_K"] = float(np.abs(dd).max())
+    CHECKS["stepwise_vs_rollout_conus_rms_2t_K"] = wrms(dd, CONUS)
     p1 = forecast(TRUE_A, TRUE_B, I0 - 1, 2)
     p2 = forecast(TRUE_A, TRUE_B, I0 - 1, 2)
-    CHECKS["rerun_maxdiff_2t_K"] = float(np.abs(pred_frame(p1, 1)["2m_temperature"]
-                                                - pred_frame(p2, 1)["2m_temperature"]).max())
+    dd = pred_frame(p1, 1)["2m_temperature"] - pred_frame(p2, 1)["2m_temperature"]
+    CHECKS["rerun_max_2t_K"] = float(np.abs(dd).max())
+    CHECKS["rerun_conus_rms_2t_K"] = wrms(dd, CONUS)
+    CHECKS["xla_flags"] = os.environ.get("XLA_FLAGS", "")
     for k, v in CHECKS.items():
-        print(f"   {k}: {v:.3e}")
+        print(f"   {k}: {v:.3e}" if isinstance(v, float) else f"   {k}: {v}")
+    if CHECKS["rerun_max_2t_K"] > 1e-3:
+        print("   WARNING: reruns are not bit-identical; the NOISE curves in the figures give the floor.")
 
 # =============================================================================
 # 8. Forecasts and scores
@@ -579,6 +610,7 @@ for name, (A, B) in ARMS.items():
     FC[name] = forecast(A, B, I0 - 1, args.steps)
     print(f"   {name:8s} {time.time()-t_:5.1f} s")
 
+NOISE_FC = forecast(TRUE_A, TRUE_B, I0 - 1, args.steps)        # rerun of ERA5 arm = run-to-run noise
 LEADS = [6 * (k + 1) for k in range(args.steps)]
 L850, L500 = LIDX[850], LIDX[500]
 for name in ARMS:
@@ -593,6 +625,10 @@ for name in ARMS:
                          rmse_t2m_withheld=station_rmse(f["2m_temperature"], ALLDF[(ALLDF.time == pd.Timestamp(DATETIMES[I0 + 1 + k]))
                                                                                    & ALLDF.sid.isin(HOLD_SIDS)])))
 SC = pd.DataFrame(ROWS)
+NOISE = pd.DataFrame([dict(lead_h=lead,
+                           conus_rms_2t=wrms(pred_frame(NOISE_FC, k)["2m_temperature"] - pred_frame(FC["ERA5"], k)["2m_temperature"], CONUS))
+                      for k, lead in enumerate(LEADS)])
+NOISE.to_csv(os.path.join(OUT, "noise_floor.csv"), index=False)
 for m in ("rmse_t2m_conus", "rmse_t850_conus", "rmse_z500_down", "rmse_t2m_uscrn", "rmse_t2m_withheld"):
     piv = SC.pivot(index="lead_h", columns="arm", values=m)
     for a in piv.columns:                                  # % error reduction relative to BASE
@@ -655,11 +691,11 @@ for name in ARMS:
 # 9. Plots
 # =============================================================================
 print("\n[9] Plotting ...")
-ORDER = ["ERA5", "BASE", "DIR-1F", "DIR-2F", "COL-2F", "BAL-2F", "REG-2F"] + \
+ORDER = ["ERA5", "BASE", "DIR-1F", "DIR-2F", "COL-2F", "BAL-2F", "REG-2F", "COL-FIX", "BAL-FIX"] + \
         [a for a in ARMS if a.startswith("NUD-")]
 ORDER = [a for a in ORDER if a in ARMS]
 COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d62728",
-       "COL-2F": "#ff7f0e", "BAL-2F": "#1f77b4", "REG-2F": "#17becf",
+       "COL-2F": "#ff7f0e", "BAL-2F": "#1f77b4", "REG-2F": "#17becf", "COL-FIX": "#ffbb78", "BAL-FIX": "#9467bd",
        "NUD-DIR": "#e377c2", "NUD-COL": "#bcbd22", "NUD-BAL": "#2ca02c", "NUD-REG": "#8c564b"}
 STY = {"ERA5": "--", "BASE": "--"}
 EXT = [230, 300, 20, 55]
@@ -728,32 +764,38 @@ axs[0].set_ylabel("Pressure (hPa)")
 savefig(fig, "fig2_vertical_profiles.png")
 
 # (3) forecast RMSE vs lead (3 metrics)
-fig, axs = plt.subplots(1, 4, figsize=(22, 5))
-for ax, m, ttl in zip(axs, ["rmse_t2m_conus", "rmse_t850_conus", "rmse_z500_down", "rmse_t2m_uscrn"],
-                      ["CONUS 2 m T RMSE vs ERA5 (K)", "CONUS T850 RMSE vs ERA5 (K)",
-                       "Z500 RMSE vs ERA5, CONUS+downstream (m)", "2 m T RMSE vs USCRN stations (K)"]):
+fig, axs = plt.subplots(1, 5, figsize=(27, 5))
+for ax, m, ttl in zip(axs, ["rmse_t2m_withheld", "rmse_t2m_uscrn", "rmse_t2m_conus", "rmse_t850_conus", "rmse_z500_down"],
+                      ["2 m T RMSE vs WITHHELD stations (K)", "2 m T RMSE vs USCRN stations (K)",
+                       "CONUS 2 m T RMSE vs ERA5 grid (K)", "CONUS T850 RMSE vs ERA5 (K)",
+                       "Z500 RMSE vs ERA5, CONUS+downstream (m)"]):
     for a in ORDER:
         s = SC[SC.arm == a]
         ax.plot(s.lead_h, s[m], STY.get(a, "-"), color=COL.get(a, "k"), marker="o", ms=3, label=a)
     ax.set_title(ttl); ax.set_xlabel("Lead (h)"); ax.set_xticks(LEADS); ax.grid(alpha=0.3)
 axs[0].legend(fontsize=8)
-fig.suptitle("Forecast error: vs ERA5 analyses and vs independent stations", weight="bold")
+fig.suptitle("Forecast error — observations (left two panels, primary for real data) and ERA5 analyses", weight="bold")
 savefig(fig, "fig3_rmse_vs_lead.png")
 
 # (4) gap closed
 fig, axs = plt.subplots(1, 3, figsize=(20, 5))
-for ax, m, ttl in zip(axs, ["gap_t2m_conus", "gap_t850_conus", "gap_t2m_uscrn"],
-                      ["2 m T vs ERA5", "T850 vs ERA5", "2 m T vs USCRN"]):
+nb = NOISE.set_index("lead_h")["conus_rms_2t"]
+for ax, m, ttl in zip(axs, ["impr_t2m_withheld", "impr_t2m_uscrn", "impr_t2m_conus"],
+                      ["withheld stations", "USCRN", "ERA5 grid"]):
     for a in ORDER:
-        if a in ("ERA5", "BASE"):
+        if a == "BASE":
             continue
         s = SC[SC.arm == a]
-        ax.plot(s.lead_h, 100 * s[m], "-", color=COL.get(a, "k"), marker="o", ms=3, label=a)
-    ax.axhline(0, color="0.5", lw=0.8); ax.axhline(100, color="k", ls="--", lw=0.8)
-    ax.set_title(f"Gap closed, {ttl}  (0 % = BASE, 100 % = ERA5 start)")
-    ax.set_xlabel("Lead (h)"); ax.set_ylabel("%"); ax.grid(alpha=0.3)
+        ax.plot(s.lead_h, s[m], STY.get(a, "-"), color=COL.get(a, "k"), marker="o", ms=3, label=a)
+    if m == "impr_t2m_conus":
+        base_rmse = SC[SC.arm == "BASE"].set_index("lead_h")["rmse_t2m_conus"]
+        band = 100 * nb / base_rmse
+        ax.fill_between(band.index, -band.values, band.values, color="0.85", label="run-to-run noise")
+    ax.axhline(0, color="0.5", lw=0.8)
+    ax.set_title(f"2 m T error reduction vs BASE (%) — {ttl}")
+    ax.set_xlabel("Lead (h)"); ax.set_xticks(LEADS); ax.grid(alpha=0.3)
 axs[0].legend(fontsize=8)
-savefig(fig, "fig4_gap_closed.png")
+savefig(fig, "fig4_improvement_vs_base.png")
 
 # (5) retention of the t0 increment
 fig, ax = plt.subplots(figsize=(8, 5))
@@ -821,10 +863,24 @@ with open(os.path.join(OUT, "summary.json"), "w") as f:
     json.dump(summ, f, indent=2, default=float)
 print("\n2 m T RMSE vs USCRN (K)")
 print(key_u.loc[[a for a in ORDER if a in key_u.index]].round(3).to_string())
-key_i = SC[SC.lead_h.isin([6, 24, 48, 72])].pivot(index="arm", columns="lead_h", values="impr_t2m_uscrn")
-print("\n2 m T error reduction vs BASE, verified on USCRN (%)")
-print(key_i.loc[[a for a in ORDER if a in key_i.index]].round(1).to_string())
-print("\nGAP CLOSED, CONUS 2 m T vs ERA5 (%)  [0 = BASE, 100 = ERA5 start; undefined when --base era5]")
-print((100 * key.loc[[a for a in ORDER if a in key.index]]).round(1).to_string())
+LSHOW = [l for l in (6, 12, 24, 48, 72) if l in LEADS]
+def _tab(col, fmt=2):
+    t = SC[SC.lead_h.isin(LSHOW)].pivot(index="arm", columns="lead_h", values=col)
+    return t.loc[[a for a in ORDER if a in t.index]].round(fmt).to_string()
+print("\n2 m T RMSE vs WITHHELD stations (K)   <- primary for real observations")
+print(_tab("rmse_t2m_withheld", 3))
+print("\n2 m T error reduction vs BASE on WITHHELD stations (%)")
+print(_tab("impr_t2m_withheld", 1))
+if VER is not None and args.obs_source != "uscrn":
+    print("\n2 m T error reduction vs BASE on USCRN (%)")
+    print(_tab("impr_t2m_uscrn", 1))
+print("\n2 m T error reduction vs BASE on ERA5 grid (%)   noise floor (K):",
+      ", ".join(f"{int(r.lead_h)}h {r.conus_rms_2t:.3f}" for r in NOISE.itertuples() if r.lead_h in LSHOW))
+print(_tab("impr_t2m_conus", 1))
+if args.base == "era5":
+    key = None
+print("\nGAP CLOSED, CONUS 2 m T vs ERA5 (%)  [0 = BASE, 100 = ERA5 start]")
+print("   (not defined for --base era5)" if args.base == "era5" else
+      (100 * key.loc[[a for a in ORDER if a in key.index]]).round(1).to_string())
 print("=" * 76)
 print(f"Outputs in {OUT}")

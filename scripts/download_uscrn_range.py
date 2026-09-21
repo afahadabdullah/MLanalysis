@@ -37,19 +37,32 @@ print("=" * 68)
 print(f"NOAA USCRN Range Downloader: {t0} to {t1}")
 print("=" * 68)
 
-# 1. Fetch Station Elevation Table
+# 1. Fetch Station Elevation Table (cached; WBAN keys zero-padded; ELEVATION is in feet)
 elev = {}
-try:
-    req = urllib.request.Request("https://www.ncei.noaa.gov/pub/data/uscrn/products/stations.tsv", headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        st = pd.read_csv(r, sep="\t", dtype=str)
-    cols = {c.upper(): c for c in st.columns}
-    wb, el = cols.get("WBAN"), cols.get("ELEVATION")
-    if wb and el:
-        elev = {r[wb]: float(r[el]) * 0.3048 for _, r in st.iterrows() if str(r[el]).strip() not in ("", "nan")}
-    print(f"[1] Station elevations loaded for {len(elev)} stations")
-except Exception as e:
-    print(f"[1] Warning: station elevation table unavailable ({e}); height correction will default to 0")
+st_path = os.path.join(OUT, "uscrn_stations.tsv")
+for attempt in range(3):
+    try:
+        if not os.path.exists(st_path):
+            req = urllib.request.Request("https://www.ncei.noaa.gov/pub/data/uscrn/products/stations.tsv",
+                                         headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=60) as r, open(st_path, "wb") as f:
+                f.write(r.read())
+        st = pd.read_csv(st_path, sep="\t", dtype=str)
+        st.columns = [c.strip().upper() for c in st.columns]
+        for _, r in st.iterrows():
+            try:
+                elev[str(r["WBAN"]).strip().zfill(5)] = float(r["ELEVATION"]) * 0.3048
+            except (ValueError, TypeError, KeyError):
+                pass
+        break
+    except Exception as e:
+        print(f"[1] attempt {attempt + 1}: station table unavailable ({e})")
+        if os.path.exists(st_path) and os.path.getsize(st_path) == 0:
+            os.remove(st_path)
+        time.sleep(3)
+print(f"[1] Station elevations loaded for {len(elev)} stations ({st_path})")
+if not elev:
+    print("    WARNING: without elevations the main script drops USCRN (or use --allow-no-elev).")
 
 # 2. Collect Target Dates
 target_dates = set((t0 + pd.Timedelta(days=i)).strftime("%Y%m%d") for i in range((t1 - t0).days + 2))
@@ -118,7 +131,8 @@ df["time"] = base + pd.to_timedelta(hh, unit="h")
 df = df[(df.time >= t0) & (df.time <= t1)].copy()
 
 # Add elevations and temperatures in Kelvin
-df["elev"] = df.sid.map(elev).astype(float)
+df["elev"] = df.sid.str.strip().str.zfill(5).map(elev).astype(float)
+print(f"[4] Elevation matched for {df.dropna(subset=['elev']).sid.nunique()} of {df.sid.nunique()} stations")
 df["t2m_K"] = (df.t + 273.15).round(3)
 
 obs = df[["sid", "lat", "lon", "elev", "time", "t2m_K"]].sort_values(["time", "sid"])
