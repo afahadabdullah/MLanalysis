@@ -405,7 +405,6 @@ for step_idx in range(n_steps):
     f_bg = results["BG"]["2m_temperature"].isel(time=step_idx).values[0]
 
     bg_rmse = np.sqrt(np.average((f_bg - f_true)**2, weights=conus_weights))
-    conus_rmse_by_arm["BG"].append(bg_rmse)
 
     arm_rmses = {}
     arm_recov = {}
