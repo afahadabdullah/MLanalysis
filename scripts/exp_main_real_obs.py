@@ -161,6 +161,15 @@ ap.add_argument("--fdv-era5-weight", type=float, default=None,
                 help="HYB-4DV: weight of the ERA5 anchor term at t0 (default: 0 when --fdv-relax-t0 1, else 1)")
 ap.add_argument("--fdv-restarts", type=int, default=3,
                 help="4DV: restart L-BFGS from the current point if it stops early (line-search failure)")
+ap.add_argument("--fdv-solver", default="gn", choices=["gn", "lbfgs"],
+                help="4DV minimizer: incremental Gauss-Newton (outer loops re-linearize GraphCast, inner "
+                     "conjugate gradient on the quadratic cost with the tangent-linear/adjoint model; default) "
+                     "or L-BFGS on the full nonlinear cost (old)")
+ap.add_argument("--fdv-outer", type=int, default=3, help="4DV-GN: outer loops (re-linearizations)")
+ap.add_argument("--fdv-inner", type=int, default=40, help="4DV-GN: max inner CG iterations per outer loop")
+ap.add_argument("--fdv-cg-tol", type=float, default=1e-3, help="4DV-GN: relative CG residual tolerance")
+ap.add_argument("--fdv-sigo-scale", type=float, default=1.0,
+                help="4DV: multiply the station obs-error std by this factor (Desroziers ratio printed in the log)")
 ap.add_argument("--fdv-relax-t0", type=int, default=1,
                 help="HYB-4DV: launch t0 frame = relax_ERA5(F(x_b)) + [F(x_a) - F(x_b)], i.e. the same ERA5 "
                      "anchoring as HYB-DIR at t0 plus the model-evolved 4D-Var increment (1), or raw F(x_a) (0)")
@@ -1081,6 +1090,7 @@ if _need_jac or _need_4dv:
     import jax.numpy as jnp
     import scipy.ndimage as ndi
     from scipy.optimize import minimize
+    import jax.scipy.sparse.linalg  # noqa: F401  (CG for incremental 4D-Var)
     try:
         from graphcast import xarray_jax as XJ
     except ImportError:
@@ -1269,6 +1279,7 @@ if _need_jac or _need_4dv:
             la, lo, innov, so2k, _, _ = qc_innovations(bg, d)
             ii = _interp_idx(la, lo)
             y = interp2(bg, la, lo) + innov
+            so2k = so2k * args.fdv_sigo_scale ** 2
             obs_terms.append((jnp.asarray(y, jnp.float32), jnp.asarray(so2k, jnp.float32), ii))
         ctrl = [(v, None) for v in ("2m_temperature",) if v in CTRL_SIG] + \
                [(v, CTRL_LEV) for v in ("temperature", "specific_humidity", "u_component_of_wind",
@@ -1323,45 +1334,131 @@ if _need_jac or _need_4dv:
             Jb, Jo1, Jo2, Ja = cost_parts(z)
             return (Jb + Jo1 + Jo2 + Ja) / N_OBS                 # O(1) scaling for the optimizer
 
-        vg = jax.jit(jax.value_and_grad(cost))
-        parts = jax.jit(cost_parts)
-        z = np.zeros(sum(sizes), np.float64)
-        hist = []
+        def obs_resid(z):
+            """Normalized obs residuals (H x - y)/sigma_o at t0-6h and t0 (for Desroziers diagnostics)."""
+            A, B = analysed(z)
+            C = step(A, B)
+            return [(_H(fld, ii) - y) / jnp.sqrt(so2)
+                    for (y, so2, ii), fld in zip(obs_terms, (B["2m_temperature"], C["2m_temperature"]))]
 
-        def fun(zz):
-            J, g = vg(jnp.asarray(zz, jnp.float32))
-            hist.append(float(J) * N_OBS)
-            return float(J), np.asarray(g, np.float64)
+        def resid(z):
+            """All weighted residuals r(z): J(z) = 1/2 |z|^2 + 1/2 |r(z)|^2 (same cost as cost_parts)."""
+            A, B = analysed(z)
+            C = step(A, B)
+            rs = [((_H(fld, ii) - y) / jnp.sqrt(so2))
+                  for (y, so2, ii), fld in zip(obs_terms, (B["2m_temperature"], C["2m_temperature"]))]
+            if E0 is not None and W_ERA5 > 0:
+                sm = jnp.sqrt(mask_box)
+                for v, lev in ctrl:
+                    sig = CTRL_SIG[v]
+                    if lev is None:
+                        dv = C[v][R0:R1, C0:C1] - E0[v][R0:R1, C0:C1]
+                    else:
+                        dv = C[v][jnp.asarray(lev), R0:R1, C0:C1] - E0[v][jnp.asarray(lev), R0:R1, C0:C1]
+                    rs.append((jnp.sqrt(W_ERA5) * dv / sig * sm).ravel())
+            return jnp.concatenate([r.ravel() for r in rs])
+
+        parts = jax.jit(cost_parts)
+        ores = jax.jit(obs_resid)
 
         def _parts(zz):
             return [float(x) for x in parts(jnp.asarray(zz, jnp.float32))]
 
         t_ = time.time()
+        z = np.zeros(sum(sizes), np.float64)
         P0 = _parts(z)
-        it_total, msgs = 0, []
-        for r in range(1 + max(0, args.fdv_restarts)):
-            left = args.fdv_iter - it_total
-            if left <= 0:
-                break
-            res = minimize(fun, z, jac=True, method="L-BFGS-B",
-                           options=dict(maxiter=left, maxcor=20, maxls=50, ftol=1e-10, gtol=1e-7))
-            z = res.x; it_total += int(res.nit)
-            msgs.append(str(res.message))
-            if res.success and "ABNORMAL" not in str(res.message).upper():
-                break
-            if res.nit == 0:
-                break
+        it_total, msgs, hist, inner_log = 0, [], [], []
+
+        if args.fdv_solver == "gn":
+            @jax.jit
+            def gn_step(zk):
+                """One incremental 4D-Var outer loop: linearize GraphCast at zk, solve
+                (I + H^T R^-1 H) dz = -(zk + H^T R^-1/2 r_k) by CG with TL (jvp) / adjoint (transpose)."""
+                rk, f_jvp = jax.linearize(resid, zk)
+                f_vjp = jax.linear_transpose(f_jvp, zk)
+                def hess(v):
+                    return v + f_vjp(f_jvp(v))[0]
+                b = -(zk + f_vjp(rk)[0])
+                dz, _ = jax.scipy.sparse.linalg.cg(hess, b, x0=jnp.zeros_like(zk),
+                                                   tol=args.fdv_cg_tol, maxiter=args.fdv_inner)
+                rel = jnp.linalg.norm(hess(dz) - b) / (jnp.linalg.norm(b) + 1e-30)
+                rl = rk + f_jvp(dz)
+                Jq = 0.5 * jnp.sum((zk + dz) ** 2) + 0.5 * jnp.sum(rl ** 2)      # predicted (linear) cost
+                return dz, Jq, rel, jnp.linalg.norm(b)
+            J_cur = sum(P0)
+            for k in range(max(1, args.fdv_outer)):
+                t_k = time.time()
+                dz, Jq, rel, gn = gn_step(jnp.asarray(z, jnp.float32))
+                dz = np.asarray(dz, np.float64)
+                if (J_cur - float(Jq)) / max(J_cur, 1.0) < 1e-4:     # linear model predicts no further gain
+                    msgs.append(f"converged: predicted decrease < 1e-4 at outer {k+1}")
+                    print(f"      outer {k+1}: predicted decrease {J_cur - float(Jq):.2f} -> converged")
+                    break
+                step_len, J_new = 1.0, None
+                for _bt in range(4):                                  # guard against nonlinearity
+                    J_try = sum(_parts(z + step_len * dz))
+                    if J_try < J_cur:
+                        J_new = J_try; break
+                    step_len *= 0.5
+                if J_new is None:
+                    msgs.append(f"outer {k+1}: no decrease (nonlinear), stopped")
+                    print(f"      outer {k+1}: no decrease after backtracking; stop")
+                    break
+                z = z + step_len * dz
+                it_total += 1
+                inner_log.append(dict(outer=k + 1, J=J_new, J_pred=float(Jq), cg_rel_resid=float(rel),
+                                      grad_norm=float(gn), step=step_len, seconds=round(time.time() - t_k, 1)))
+                print(f"      outer {k+1}: J {J_cur:.1f} -> {J_new:.1f} (linear prediction {float(Jq):.1f}), "
+                      f"CG rel. residual {float(rel):.1e}, |grad| {float(gn):.1f}, step {step_len:g} "
+                      f"({time.time()-t_k:.0f} s)")
+                done = (J_cur - J_new) / max(J_cur, 1.0) < 1e-3
+                J_cur = J_new
+                if done:
+                    msgs.append(f"converged: relative decrease < 1e-3 at outer {k+1}")
+                    break
+            else:
+                msgs.append(f"finished {args.fdv_outer} outer loops")
+        else:
+            vg = jax.jit(jax.value_and_grad(cost))
+
+            def fun(zz):
+                J, g = vg(jnp.asarray(zz, jnp.float32))
+                hist.append(float(J) * N_OBS)
+                return float(J), np.asarray(g, np.float64)
+
+            for r in range(1 + max(0, args.fdv_restarts)):
+                left = args.fdv_iter - it_total
+                if left <= 0:
+                    break
+                J_before = fun(z)[0]
+                res = minimize(fun, z, jac=True, method="L-BFGS-B",
+                               options=dict(maxiter=left, maxcor=20, maxls=50, ftol=1e-10, gtol=1e-7))
+                z = res.x; it_total += int(res.nit)
+                msgs.append(str(res.message))
+                gain = (J_before - float(res.fun)) / max(abs(J_before), 1e-12)
+                stalled = ("ABNORMAL" in str(res.message).upper() or "FACTR" in str(res.message).upper())
+                if not stalled or res.nit == 0 or gain < 1e-4:     # restart only if the last pass still made progress
+                    break
         P1 = _parts(z)
         A_a, B_a = analysed(jnp.asarray(z, jnp.float32))
         A_a, B_a = _to_np(A_a), _to_np(B_a)
-        FDV_LOG[tag] = dict(J0=sum(P0), J_final=sum(P1), n_iter=it_total, n_eval=len(hist),
+        rb = [np.asarray(r, np.float64) for r in ores(jnp.zeros(sum(sizes), jnp.float32))]
+        ra = [np.asarray(r, np.float64) for r in ores(jnp.asarray(z, jnp.float32))]
+        # Desroziers: E[(y-Hx_a)(y-Hx_b)] = sigma_o^2  -> ratio of true to assumed obs-error std
+        des = [float(np.sqrt(max(np.mean(a * b), 0.0))) for a, b in zip(ra, rb)]
+        chi2b = [float(np.mean(b * b)) for b in rb]           # innovation variance / sigma_o^2 (expect 1 + HBH'/R)
+        FDV_LOG[tag] = dict(J0=sum(P0), J_final=sum(P1), n_iter=it_total, n_eval=len(hist), solver=args.fdv_solver, outer=inner_log,
+                            desroziers_sigo_ratio=des, innov_chi2=chi2b, sigo_scale=args.fdv_sigo_scale,
                             restarts=len(msgs) - 1, stop=msgs, n_obs=[int(len(o[0])) for o in obs_terms],
                             Jb=[P0[0], P1[0]], Jo_tm6=[P0[1], P1[1]], Jo_t0=[P0[2], P1[2]], J_era5=[P0[3], P1[3]],
                             era5_weight=W_ERA5, seconds=round(time.time() - t_, 1))
-        print(f"   {tag}: J {sum(P0):.1f} -> {sum(P1):.1f} in {it_total} iterations, {len(msgs) - 1} restarts "
+        print(f"   {tag} [{args.fdv_solver}]: J {sum(P0):.1f} -> {sum(P1):.1f} in {it_total} "
+              f"{'outer loops' if args.fdv_solver == 'gn' else 'iterations'}, {max(len(msgs) - 1, 0)} restarts "
               f"({time.time()-t_:.0f} s); stop: {msgs[-1]}")
         print(f"      Jb 0 -> {P1[0]:.1f} | Jo(t0-6h) {P0[1]:.1f} -> {P1[1]:.1f} | Jo(t0) {P0[2]:.1f} -> {P1[2]:.1f}"
               f" | J_ERA5 {P0[3]:.1f} -> {P1[3]:.1f}   (N_obs = {int(N_OBS)}; well fitted: Jo ~ N_obs/2 per time)")
+        print(f"      innovation chi2/obs (t0-6h, t0) = {chi2b[0]:.2f}, {chi2b[1]:.2f}  |  Desroziers sigma_o ratio "
+              f"(true/assumed) = {des[0]:.2f}, {des[1]:.2f}  (sigo-scale {args.fdv_sigo_scale:g}; ~1 = consistent)")
         C_a = pred_frame(forecast(A_a, B_a, start, 1), 0)      # launch pair with the operational forward
         if relax_t0 is not None:                                 # HYB-4DV: same t0 anchoring as HYB-DIR
             C_bf = pred_frame(forecast(Ab, Bb, start, 1), 0)
