@@ -247,9 +247,7 @@ print(f"t0 = {args.t0}   steps = {args.steps} ({args.steps*6} h)   data = {DATA}
 print(f"base = {args.base}   obs = {args.obs_source} (sigma_o = {SIGMA_O} K)   out = {OUT}")
 
 # =============================================================================
-# 1. Model
-# =============================================================================
-print("\n[1] Loading GraphCast_small checkpoint and normalization stats ...")
+print(f"\n[1] Loading GraphCast ({args.model}: {os.path.basename(PARAMS)}) and normalization stats ...")
 with open(PARAMS, "rb") as f:
     ckpt = checkpoint.load(f, graphcast.CheckPoint)
 params, model_config, task_config = ckpt.params, ckpt.model_config, ckpt.task_config
