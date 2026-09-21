@@ -388,12 +388,18 @@ pdf_path = os.path.join(OUTDIR, "da_machinery_synthesis.pdf")
 plt.savefig(png_path, dpi=300, bbox_inches="tight")
 plt.savefig(pdf_path, bbox_inches="tight")
 
+# Also save copy to docs/figs/
+import shutil
+docs_figs_dir = os.path.join(PROJ, "docs", "figs")
+os.makedirs(docs_figs_dir, exist_ok=True)
+shutil.copyfile(png_path, os.path.join(docs_figs_dir, "da_machinery_synthesis.png"))
+
 # Also copy to artifact directory
 artifact_png = os.path.join(ARTIFACT_DIR, "da_machinery_synthesis.png")
-import shutil
 shutil.copyfile(png_path, artifact_png)
 
 print(f"Generated synthesis plot successfully:")
 print(f"  PNG: {png_path}")
 print(f"  PDF: {pdf_path}")
+print(f"  Docs: {os.path.join(docs_figs_dir, 'da_machinery_synthesis.png')}")
 print(f"  Artifact: {artifact_png}")

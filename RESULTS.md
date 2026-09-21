@@ -1040,12 +1040,12 @@ This section synthesizes the complete experimental campaign (Sections 21–25) e
 #### Figure 1: Lead Time vs. Forecast Error (1.0° vs. 0.25° Across All Arms)
 Tracks 2 m temperature RMSE and relative percentage change vs. the native operational ERA5 cold start across all forecast leads (6h to 72h) on both the withheld ISD operational network (~640 stations) and the unassimilated USCRN climatological reference network (~120 stations).
 
-![Lead Time vs Forecast Error](runs/diagnostics/da_lead_vs_error_all_arms.png)
+![Lead Time vs Forecast Error](docs/figs/da_lead_vs_error_all_arms.png)
 
 #### Figure 2: Comprehensive Data Assimilation Machinery Dashboard
 Six-panel synthesis dissecting the hierarchy of assimilation methods, 0.25° resolution scaling, climatological network verification, long-range ranking, free-atmosphere anchoring physics, and the elimination of initial tendency shock via 4D-Var.
 
-![DA Machinery Dashboard](runs/diagnostics/da_machinery_synthesis.png)
+![DA Machinery Dashboard](docs/figs/da_machinery_synthesis.png)
 
 ---
 
