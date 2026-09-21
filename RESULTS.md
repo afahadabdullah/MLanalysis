@@ -1082,3 +1082,50 @@ Six-panel synthesis dissecting the hierarchy of assimilation methods, 0.25° res
    - At 1.0° (~111 km), coarse topography introduces a slight representativeness mismatch with valley/mountain stations (+2.8% at +6h).
    - At 0.25° (~28 km), the model resolves steep terrain, turning the +6h penalty into an immediate, statistically significant win (**$-2.5\%^*$**).
 
+---
+
+## 27. 4D-Var v3: Restored $t_0$ Anchoring & Incremental Gauss-Newton Formulation
+
+### 27.1 The $t_0$ Anchoring Fix (`--fdv-relax-t0 1`)
+In earlier 4D-Var runs (§24), `HYB72-4DV` dominated the early analysis window (+6h to +12h) but degraded at Days 2–3 because the 4D-Var launch frame $F(x_a)$ was unanchored to ERA5 at $t_0$, allowing upper-tropospheric drift ($t_0\ T_{850}$ error surged to 0.538 K).
+
+Applying identical $t_0$ ERA5 relaxation to the 4D-Var launch frame (`--fdv-relax-t0 1`: $C_a = \mathrm{relax}(C_{bf}) + [C_a - C_{bf}]$) completely solved this issue:
+- **$t_0\ T_{850}$ error**: Dropped from **0.538 K** to **0.230 K** (matching `HYB72-DIR`'s 0.223 K and `REPLAY72`'s 0.217 K).
+- **Hypsometric residual**: Reduced from 1.685 m to **0.514 m** (matching `HYB72-DIR`'s 0.471 m).
+- **Day-3 Gap Closed vs ERA5**: Surged from **58.8%** to **102.3%**.
+
+### 27.2 Verified Forecast Performance (v3 Run)
+
+#### Paired Bootstrap vs ERA5 (% change in 2m T RMSE; * = significant, <0 = better)
+| Lead Time | `HYB72-4DV` (Withheld) | `HYB72-DIR` (Withheld) | `REPLAY72` (Withheld) | `HYB72-4DV` (USCRN) | `HYB72-DIR` (USCRN) | Winner |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **+6h** | **−1.0%** | +2.8% | 0.0% | **−3.0% (1.605 K)** | −2.5% (1.613 K) | 🏆 **`HYB72-4DV`** |
+| **+12h** | **−3.1%*** | −0.4% | −1.5%* | −10.8%* | **−12.8%*** | 🏆 **`HYB72-4DV`** (ISD) |
+| **+24h** | −2.0%* | **−2.7%*** | −0.8%* | −1.3% | **−4.3%*** | 🏆 **`HYB72-DIR`** |
+| **+48h** | −1.6%* | **−2.6%*** | −0.3% | −2.5% | **−3.7%*** | 🏆 **`HYB72-DIR`** |
+| **+72h** | −2.4%* | **−3.6%*** | −0.9% | −3.1%* | **−4.3%*** | 🏆 **`HYB72-DIR`** |
+
+#### Paired Bootstrap vs BASE on Withheld ISD Stations (% error reduction)
+| Lead Time | `4DV` (Standalone) | `DIR-1F` | `HYB72-4DV` | `HYB72-DIR` |
+|---|:---:|:---:|:---:|:---:|
+| **+6h** | **−4.7%*** | +1.9% | **−13.2%*** | −9.8%* |
+| **+12h** | **−5.0%*** | +1.2% | **−10.7%*** | −8.3%* |
+| **+24h** | **−1.9%*** | −0.1% | −6.3%* | **−6.9%*** |
+| **+48h** | **−2.3%*** | −1.7%* | −8.1%* | **−9.0%*** |
+| **+72h** | **−2.5%*** | −1.1%* | −6.7%* | **−7.9%*** |
+
+**Scientific Takeaways:**
+1. **Consistency Beats Closeness:** `HYB72-4DV` fits stations less closely at $t_0$ than `HYB72-DIR` (1.832 K vs 1.730 K), yet yields lower forecast error at +6h (1.723 K vs 1.791 K) and +12h (1.711 K vs 1.758 K).
+2. **Two Complementary Regimes:** `HYB72-4DV` wins the immediate analysis regime (+6h to +12h); `HYB72-DIR` wins the medium-range advective regime (+24h to +72h).
+3. **Standalone 4DV Solves the Shock Problem:** Standalone `4DV` beats uncycled direct insertion (`DIR-1F`) at all leads (−4.7%* vs +1.9% at +6h).
+
+### 27.3 Why L-BFGS Stalled & The Incremental Gauss-Newton Fix
+Although the v3 run succeeded, L-BFGS terminated early:
+- $J_o$ reached 1016 ($t_0-6\text{h}$) and 1298 ($t_0$) against an expected optimal $\sim N_{\text{obs}}/2 \approx 617$.
+- `CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH` indicated float32 precision limits in the line search rather than an actual physical minimum.
+
+**Incremental Gauss-Newton Solver (`--fdv-solver gn`):**
+1. **Outer loop:** Linearizes GraphCast (`jax.linearize`) around the current state.
+2. **Inner loop:** Quadratic cost minimization via Conjugate Gradient (CG) using compiled tangent-linear and adjoint operators without line search, eliminating float32 rounding stalls.
+3. **Diagnostics:** Reports innovation $\chi^2/N_{\text{obs}}$ and Desroziers ratio (diagnosed vs assumed $\sigma_o$).
+
