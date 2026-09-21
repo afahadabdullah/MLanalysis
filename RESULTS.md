@@ -1119,13 +1119,15 @@ Applying identical $t_0$ ERA5 relaxation to the 4D-Var launch frame (`--fdv-rela
 2. **Two Complementary Regimes:** `HYB72-4DV` wins the immediate analysis regime (+6h to +12h); `HYB72-DIR` wins the medium-range advective regime (+24h to +72h).
 3. **Standalone 4DV Solves the Shock Problem:** Standalone `4DV` beats uncycled direct insertion (`DIR-1F`) at all leads (−4.7%* vs +1.9% at +6h).
 
-### 27.3 Why L-BFGS Stalled & The Incremental Gauss-Newton Fix
+### 27.3 Why L-BFGS Stalled & The Memory-Safe Incremental Gauss-Newton Fix
 Although the v3 run succeeded, L-BFGS terminated early:
 - $J_o$ reached 1016 ($t_0-6\text{h}$) and 1298 ($t_0$) against an expected optimal $\sim N_{\text{obs}}/2 \approx 617$.
 - `CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH` indicated float32 precision limits in the line search rather than an actual physical minimum.
+- L-BFGS has now been updated to report the initial and terminal gradient norm ratio $|g_1|/|g_0|$: a ratio $< 10^{-2}$ confirms true convergence to a stationary point, whereas $\gg 10^{-2}$ identifies a line-search precision stall.
 
-**Incremental Gauss-Newton Solver (`--fdv-solver gn`):**
-1. **Outer loop:** Linearizes GraphCast (`jax.linearize`) around the current state.
-2. **Inner loop:** Quadratic cost minimization via Conjugate Gradient (CG) using compiled tangent-linear and adjoint operators without line search, eliminating float32 rounding stalls.
-3. **Diagnostics:** Reports innovation $\chi^2/N_{\text{obs}}$ and Desroziers ratio (diagnosed vs assumed $\sigma_o$).
+**Memory-Safe Incremental Gauss-Newton Solver (`--fdv-solver gn`):**
+1. **Memory Architecture:** The initial attempt fused `jax.linearize` + adjoint + inner CG inside a single monolithic JIT graph, keeping all primal activations and adjoint working memory simultaneously on GPU (29.3 GiB peak, causing OOM on 32 GB V100). The updated architecture compiles the tangent-linear forward pass (`tl_j = jax.jit(jvp)`) and adjoint pass (`ad_j = jax.jit(vjp)`) as two separate functions executed sequentially.
+2. **Host-Side CG:** Conjugate Gradient runs on the host in float64. Peak GPU memory at any instant is strictly identical to a single gradient evaluation (~24.5 GiB), comfortably fitting the 32 GB Tesla V100.
+3. **Outer Loop Backtracking:** Each outer loop tests the full nonlinear cost with step-halving backtracking to guarantee monotonic descent.
+4. **Diagnostics:** Prints the CG residual, gradient norm, innovation $\chi^2/N_{\text{obs}}$, and Desroziers ratio ($\sigma_{\text{true}}/\sigma_{\text{assumed}}$).
 
