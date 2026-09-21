@@ -15,6 +15,7 @@ mkdir -p logs
 module load miniforge 2>/dev/null || true
 source activate "$PROJ/envs/gc" 2>/dev/null || conda activate "$PROJ/envs/gc"
 export PYTHONNOUSERSITE=1
+export PYTHONUNBUFFERED=1
 export PROJ
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
@@ -23,7 +24,7 @@ echo "Running on host: $(hostname)"
 echo "GPU allocated:"
 nvidia-smi --query-gpu=name,memory.total --format=csv
 
-python scripts/exp_main_real_obs.py \
+python -u scripts/exp_main_real_obs.py \
     --t0 2018-01-15T12:00 \
     --obs-source isd \
     --model large \
