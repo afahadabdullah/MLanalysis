@@ -248,8 +248,8 @@ print(f"      Assimilated stations: {len(idx_assimilated)} | Withheld stations: 
 
 def analyze_observations_for_time(t_step):
     """Samples true T2m, adds noise, computes departures from BG, and spreads via OI."""
-    t_true_sfc = eval_inputs_nature["2m_temperature"].sel(time=t_step).values
-    t_bg_sfc = eval_inputs_bg["2m_temperature"].sel(time=t_step).values
+    t_true_sfc = eval_inputs_nature["2m_temperature"].sel(time=t_step).values[0]
+    t_bg_sfc = eval_inputs_bg["2m_temperature"].sel(time=t_step).values[0]
 
     obs_lats = lats[idx_assimilated[:, 0]]
     obs_lons = lons[idx_assimilated[:, 1]]
