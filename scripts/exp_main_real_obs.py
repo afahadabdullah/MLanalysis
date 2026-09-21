@@ -161,12 +161,12 @@ ap.add_argument("--fdv-era5-weight", type=float, default=None,
                 help="HYB-4DV: weight of the ERA5 anchor term at t0 (default: 0 when --fdv-relax-t0 1, else 1)")
 ap.add_argument("--fdv-restarts", type=int, default=3,
                 help="4DV: restart L-BFGS from the current point if it stops early (line-search failure)")
-ap.add_argument("--fdv-solver", default="lbfgs", choices=["gn", "lbfgs"],
-                help="4DV minimizer: L-BFGS on the full nonlinear cost (default; memory-safe on 32GB V100) "
-                     "or incremental Gauss-Newton (outer loops re-linearize GraphCast, inner "
-                     "conjugate gradient on quadratic cost; requires >32GB VRAM like 80GB A100)")
+ap.add_argument("--fdv-solver", default="gn", choices=["gn", "lbfgs"],
+                help="4DV minimizer: incremental Gauss-Newton (default; outer loops re-linearize GraphCast, inner "
+                     "CG on the host with separately compiled TL (jvp) and adjoint (vjp) calls, so peak GPU memory "
+                     "= one gradient, fits a 32 GB V100) or L-BFGS on the full nonlinear cost")
 ap.add_argument("--fdv-outer", type=int, default=3, help="4DV-GN: outer loops (re-linearizations)")
-ap.add_argument("--fdv-inner", type=int, default=40, help="4DV-GN: max inner CG iterations per outer loop")
+ap.add_argument("--fdv-inner", type=int, default=40, help="4DV-GN: max inner CG iterations per outer loop (each = 1 TL + 1 adjoint run)")
 ap.add_argument("--fdv-cg-tol", type=float, default=1e-3, help="4DV-GN: relative CG residual tolerance")
 ap.add_argument("--fdv-sigo-scale", type=float, default=1.0,
                 help="4DV: multiply the station obs-error std by this factor (Desroziers ratio printed in the log)")
@@ -1370,47 +1370,61 @@ if _need_jac or _need_4dv:
         it_total, msgs, hist, inner_log = 0, [], [], []
 
         if args.fdv_solver == "gn":
-            @jax.jit
-            def gn_step(zk):
-                """One incremental 4D-Var outer loop: linearize GraphCast at zk, solve
-                (I + H^T R^-1 H) dz = -(zk + H^T R^-1/2 r_k) by CG with TL (jvp) / adjoint (transpose)."""
-                rk, f_jvp = jax.linearize(resid, zk)
-                f_vjp = jax.linear_transpose(f_jvp, zk)
-                def hess(v):
-                    return v + f_vjp(f_jvp(v))[0]
-                b = -(zk + f_vjp(rk)[0])
-                dz, _ = jax.scipy.sparse.linalg.cg(hess, b, x0=jnp.zeros_like(zk),
-                                                   tol=args.fdv_cg_tol, maxiter=args.fdv_inner)
-                rel = jnp.linalg.norm(hess(dz) - b) / (jnp.linalg.norm(b) + 1e-30)
-                rl = rk + f_jvp(dz)
-                Jq = 0.5 * jnp.sum((zk + dz) ** 2) + 0.5 * jnp.sum(rl ** 2)      # predicted (linear) cost
-                return dz, Jq, rel, jnp.linalg.norm(b)
+            # Memory-safe incremental 4D-Var: the tangent-linear (J v, forward-mode jvp) and adjoint
+            # (J^T u, reverse-mode vjp) are two separately compiled functions called one after the other,
+            # so peak GPU memory = that of one gradient (same as L-BFGS). CG runs on the host in float64.
+            resid_j = jax.jit(resid)
+            tl_j = jax.jit(lambda zk, v: jax.jvp(resid, (zk,), (v,))[1])
+            ad_j = jax.jit(lambda zk, u: jax.vjp(resid, zk)[1](u)[0])
+            f32 = lambda a: jnp.asarray(a, jnp.float32)
+            f64 = lambda a: np.asarray(a, np.float64)
             J_cur = sum(P0)
             for k in range(max(1, args.fdv_outer)):
                 t_k = time.time()
-                dz, Jq, rel, gn = gn_step(jnp.asarray(z, jnp.float32))
-                dz = np.asarray(dz, np.float64)
-                if (J_cur - float(Jq)) / max(J_cur, 1.0) < 1e-4:     # linear model predicts no further gain
+                zk = f32(z)
+                rk = f64(resid_j(zk))
+                b = -(z + f64(ad_j(zk, f32(rk))))                 # -grad J at zk
+                gn = float(np.linalg.norm(b))
+
+                def hess(v):                                      # (I + J^T J) v
+                    return v + f64(ad_j(zk, tl_j(zk, f32(v))))
+                dz = np.zeros_like(z); r_ = b.copy(); p_ = r_.copy(); rr = float(r_ @ r_)
+                n_in = 0
+                for n_in in range(1, args.fdv_inner + 1):         # conjugate gradient (Hestenes-Stiefel)
+                    Ap = hess(p_)
+                    a_ = rr / float(p_ @ Ap)
+                    dz += a_ * p_; r_ -= a_ * Ap
+                    rr_new = float(r_ @ r_)
+                    if n_in == 1 and k == 0:
+                        print(f"      outer {k+1}: first CG iteration {time.time()-t_k:.0f} s "
+                              f"(incl. compiling the TL and adjoint)", flush=True)
+                    if np.sqrt(rr_new) / (gn + 1e-30) < args.fdv_cg_tol:
+                        break
+                    p_ = r_ + (rr_new / rr) * p_; rr = rr_new
+                rel = np.sqrt(rr_new) / (gn + 1e-30)
+                rl = rk + f64(tl_j(zk, f32(dz)))
+                Jq = 0.5 * float((z + dz) @ (z + dz)) + 0.5 * float(rl @ rl)   # predicted (linear) cost
+                if (J_cur - Jq) / max(J_cur, 1.0) < 1e-4:        # linear model predicts no further gain
                     msgs.append(f"converged: predicted decrease < 1e-4 at outer {k+1}")
-                    print(f"      outer {k+1}: predicted decrease {J_cur - float(Jq):.2f} -> converged")
+                    print(f"      outer {k+1}: predicted decrease {J_cur - Jq:.2f} -> converged")
                     break
                 step_len, J_new = 1.0, None
-                for _bt in range(4):                                  # guard against nonlinearity
+                for _bt in range(4):                              # guard against nonlinearity
                     J_try = sum(_parts(z + step_len * dz))
                     if J_try < J_cur:
                         J_new = J_try; break
                     step_len *= 0.5
                 if J_new is None:
-                    msgs.append(f"outer {k+1}: no decrease (nonlinear), stopped")
+                    msgs.append(f"outer {k+1}: no decrease after backtracking (nonlinear), stopped")
                     print(f"      outer {k+1}: no decrease after backtracking; stop")
                     break
                 z = z + step_len * dz
                 it_total += 1
-                inner_log.append(dict(outer=k + 1, J=J_new, J_pred=float(Jq), cg_rel_resid=float(rel),
-                                      grad_norm=float(gn), step=step_len, seconds=round(time.time() - t_k, 1)))
-                print(f"      outer {k+1}: J {J_cur:.1f} -> {J_new:.1f} (linear prediction {float(Jq):.1f}), "
-                      f"CG rel. residual {float(rel):.1e}, |grad| {float(gn):.1f}, step {step_len:g} "
-                      f"({time.time()-t_k:.0f} s)")
+                inner_log.append(dict(outer=k + 1, J=J_new, J_pred=Jq, cg_iters=n_in, cg_rel_resid=float(rel),
+                                      grad_norm=gn, step=step_len, seconds=round(time.time() - t_k, 1)))
+                print(f"      outer {k+1}: J {J_cur:.1f} -> {J_new:.1f} (linear prediction {Jq:.1f}), "
+                      f"{n_in} CG its, CG rel. residual {rel:.1e}, |grad| {gn:.1f}, step {step_len:g} "
+                      f"({time.time()-t_k:.0f} s)", flush=True)
                 done = (J_cur - J_new) / max(J_cur, 1.0) < 1e-3
                 J_cur = J_new
                 if done:
@@ -1439,6 +1453,8 @@ if _need_jac or _need_4dv:
                 stalled = ("ABNORMAL" in str(res.message).upper() or "FACTR" in str(res.message).upper())
                 if not stalled or res.nit == 0 or gain < 1e-4:     # restart only if the last pass still made progress
                     break
+            g0 = float(np.linalg.norm(fun(np.zeros_like(z))[1])); g1 = float(np.linalg.norm(fun(z)[1]))
+            msgs[-1] += f" | |grad| {g0:.3g} -> {g1:.3g} ({g1 / max(g0, 1e-30):.1e} of start; <~1e-2 = truly converged)"
         P1 = _parts(z)
         A_a, B_a = analysed(jnp.asarray(z, jnp.float32))
         A_a, B_a = _to_np(A_a), _to_np(B_a)
