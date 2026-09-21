@@ -299,7 +299,9 @@ for arm_name, arm_inp in arms.items():
 # ---------------------------------------------------------------------------
 print("\n[5/5] Computing retention, peak amplitude, and CONUS RMSE ...")
 
-conus_mask = (lats >= 25.0) & (lats <= 50.0)[:, np.newaxis] & ((lons >= 235.0) & (lons <= 295.0))[np.newaxis, :]
+lat_mask = (lats >= 25.0) & (lats <= 50.0)
+lon_mask = (lons >= 235.0) & (lons <= 295.0)
+conus_mask = lat_mask[:, np.newaxis] & lon_mask[np.newaxis, :]
 conus_weights = cos_lat * conus_mask
 
 retention_data = {arm: [] for arm in arms}
