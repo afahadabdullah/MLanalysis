@@ -1207,18 +1207,27 @@ if _need_jac or _need_4dv:
 
     def _gauss_kernel(sig):
         r = int(np.ceil(3 * sig)); x = np.arange(-r, r + 1)
-        k = np.exp(-0.5 * (x / sig) ** 2); return jnp.asarray(k / k.sum(), jnp.float32)
+        k = np.exp(-0.5 * (x / sig) ** 2); return (k / k.sum()).astype(np.float32)
 
-    _KY = _gauss_kernel(args.fdv_L / 111.0 / (LATS[1] - LATS[0]))
-    _KX = _gauss_kernel(args.fdv_L / (111.0 * np.cos(np.deg2rad(40.0))) / (LONS[1] - LONS[0]))
+    _KY_1D = _gauss_kernel(args.fdv_L / 111.0 / (LATS[1] - LATS[0]))
+    _KX_1D = _gauss_kernel(args.fdv_L / (111.0 * np.cos(np.deg2rad(40.0))) / (LONS[1] - LONS[0]))
+
+    def _conv_mat(k, n):
+        r = (len(k) - 1) // 2
+        M = np.zeros((n, n), dtype=np.float32)
+        for i in range(n):
+            for j in range(n):
+                m = j - i + r
+                if 0 <= m < len(k):
+                    M[i, j] = k[m]
+        return jnp.asarray(M, dtype=jnp.float32)
+
+    _KY = _conv_mat(_KY_1D, R1 - R0)
+    _KX = _conv_mat(_KX_1D, C1 - C0)
 
     def _bsqrt(chi):
-        """B^1/2: separable Gaussian smoothing of a (..., ny, nx) control field."""
-        f = jax.vmap(lambda row: jnp.convolve(row, _KX, mode="same"), in_axes=-2, out_axes=-2)(chi) \
-            if chi.ndim == 2 else jax.vmap(lambda a: _bsqrt(a))(chi)
-        if chi.ndim == 2:
-            f = jax.vmap(lambda col: jnp.convolve(col, _KY, mode="same"), in_axes=-1, out_axes=-1)(f)
-        return f
+        """B^1/2: separable Gaussian smoothing of a (..., ny, nx) control field via GEMM (avoids cuDNN)."""
+        return _KY @ chi @ _KX.T
 
     def _interp_idx(la, lo):
         lo = np.mod(lo, 360.0)
@@ -1271,7 +1280,7 @@ if _need_jac or _need_4dv:
                 sig = CTRL_SIG[v]
                 for f, X in ((0, A), (1, B)):
                     c = chi[f]
-                    inc = (_bsqrt(c) if lev is None else jax.vmap(_bsqrt)(c)) * sig * mask_box
+                    inc = _bsqrt(c) * sig * mask_box
                     if lev is None:
                         X[v] = X[v].at[R0:R1, C0:C1].add(inc)
                     else:

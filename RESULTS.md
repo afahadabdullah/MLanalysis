@@ -904,3 +904,36 @@ t0 T850 error vs ERA5: NUD72-BAL (surface-only) **2.02 K**, FREE72 1.87 K, BASE 
 1. **Multi-Date Benchmark:** Expand the 4-arm test across 5–10 diverse meteorological regimes (summer convective cases, winter cold surges, 00 UTC vs 12 UTC cycles).
 2. **Provider Analysis Realism:** Evaluate hybrid cycling using operational GFS/GDAS analyses as the external upper-air anchor instead of self-reanalysis ERA5.
 3. **Ensemble Spread & Flow-Dependent Covariance:** Incorporate background error covariance inflation and multi-member ensemble insertion.
+
+---
+
+## 23. Operational variants of the hybrid cycle: weighted 4DIAU, level-selective replay, station bias correction (1°, 2018-01-15 12 UTC)
+
+Same setup as §21 (72 h cycle, full-state ERA5 relaxation τ = 6 h + ISD increments α = 0.63). Deterministic. One case.
+
+### 23.1 Paired bootstrap vs the ERA5 start (% change in 2 m T RMSE; * = significant; <0 = better)
+
+| Variant | USCRN +6 | +12 | +24 | +48 | +72 | Withheld +6 | +12 | +24 | +48 | +72 | t0 T850 err (K) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| REPLAY72 | −0.7 | −3.5* | +0.1 | −1.7 | −2.0* | 0.0 | −1.5* | −0.8* | −0.3 | −0.9 | 0.22 |
+| **HYB72-DIR** (const) | −2.5 | −12.8* | **−4.3*** | −3.7* | −4.3* | +2.8 | −0.4 | **−2.7*** | **−2.6*** | **−3.6*** | 0.22 |
+| W=ramp-up | −2.7 | −12.9* | −4.0* | −3.2* | −4.5* | +2.7 | −0.8 | −2.5* | −2.3* | −3.6* | 0.22 |
+| W=tri | +3.7 | −13.1* | +1.4 | −2.5 | −3.6 | +5.6* | +3.4* | +1.4 | +3.3 | +0.2 | 0.65 |
+| W=ramp-down | +6.7 | −11.6* | +3.5 | −2.2 | +1.6 | +8.1* | +6.0* | +3.9* | +5.8* | +5.7* | 0.73 |
+| **LS** (sfc & ≥850 hPa τ = 24 h) | −0.8 | **−17.7*** | −3.2 | −3.6* | **−6.4*** | **+6.4*** | +3.9 | −0.5 | −0.8 | −3.5* | 0.57 |
+| BC (station × hour) | −2.4 | −10.6* | −3.3* | −3.1* | −3.8* | **+1.0** | −1.8 | −2.6* | −1.9* | −2.8* | 0.22 |
+| LS+BC | −1.3 | −15.7* | −2.3 | −3.3 | −5.0* | +3.6* | +1.7 | −0.5 | −0.2 | −2.6* | 0.56 |
+
+### 23.2 What it means
+
+1. **Plain constant-weight HYB72-DIR remains the best all-round configuration** — significant gains vs ERA5 on both independent networks from 24 to 72 h, no significant loss anywhere.
+2. **Weighted 4DIAU:** `ramp-up` ≈ constant (weights near 1 at the last cycles, where it matters); `tri` and `ramp-down` are clearly worse, and the t0 T850 error shows why (0.65–0.73 K vs 0.22 K): down-weighting the last cycles removes the anchoring near t0 and the state drifts. **What matters is a strong analysis constraint in the final cycles before launch.** With a 6 h model step, GMAO-style temporal filtering of the increment has no benefit here — there are no sub-step fast modes to filter.
+3. **Level-selective replay (LS) is a trade-off**: the largest gains at independent USCRN (−17.7 %* at +12 h, −6.4 %* at +72 h vs ERA5) but a significant penalty at withheld ISD at +6 h (+6.4 %*) and a drifted lower troposphere (t0 T850 error 0.57 K). Weak relaxation of 1000–850 hPa lets station information persist — useful for rural reference sites — but also lets the model's lower-tropospheric error grow. A shallower LS layer should keep the benefit without the drift (next).
+4. **Station bias correction (BC) is nearly neutral**: slightly better at +6 h on withheld ISD (+1.0 vs +2.8 %), slightly worse later. With station × hour keys, each key gets only 3 updates in 72 h, so the bias estimate is weak; per-station keys or a longer spin-up are needed to judge it.
+5. The +12 h (00 UTC) USCRN gain is large for every station-using variant (−10 to −18 %*): the evening boundary-layer transition is where ERA5 is weakest and surface stations help most.
+
+### 23.3 Next
+1. Run the ML-method arms (`JAC-2F`, `4DV`, `HYB72-JAC`, `HYB72-4DV`) — command in OPERATIONAL_DA_PLAN.md §12.3.
+2. Tuned LS: only surface fields + 1000 hPa weakly relaxed (`--hyb-bl-top 1000`), and `--hyb-sfc-tau 12`.
+3. BC with `--bias-mode station` and `--bias-gamma 0.1`.
+4. Then the multi-date set for the winners: HYB72-DIR, HYB72-DIR-LS (tuned), the best ML method.
