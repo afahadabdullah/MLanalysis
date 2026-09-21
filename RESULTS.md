@@ -7,6 +7,8 @@
 
 ---
 
+> **Current status (20 Sep 2026): read Section 14 first.** It states the project goal, what Sections 3–13 establish, which claims do not hold, and the one experiment that answers the main question.
+
 ## 1. Executive Summary
 
 This experiment evaluates the fundamental premise of **Experiment 2 (Mesonet Observation Insertion)** from [`PROJECT_PLAN_LEAN.md`](PROJECT_PLAN_LEAN.md):
@@ -455,3 +457,100 @@ To cleanly disentangle **Vertical Depth**, **Spatial Balance**, and **Temporal T
 
 
 
+
+
+---
+
+## 14. Synthesis (20 Sep 2026): goal, what we know, and the experiment that answers it
+
+### 14.1 Main goal of the project
+
+> **Find the best way to insert new observational information into a frozen, ERA5-trained ML weather model (GraphCast) so that the forecast actually improves — and explain why simple direct insertion does or does not work.**
+
+"Best" is judged by one thing only: **forecast error against the real atmosphere (or a known truth)**, not by how long an increment survives. Persistence (retention) is the mechanism; accuracy is the goal.
+
+### 14.2 What Sections 3–13 establish (one synoptic case each, 2022-01-01 and 2018-01-15)
+
+| # | Finding | Evidence | Confidence |
+|---|---|---|---|
+| **F1** | GraphCast keeps inserted information: no destructive initialization shock; a surface increment advects coherently and converts into low-level T, MSLP and wind responses | §3–4, §11 | Solid mechanism (single cases) |
+| **F2** | **Depth dominates.** Surface-only insertion keeps ~50 % of the increment and recovers only ~28–31 % of the analysis error by Day 1; carrying the same correction through 1000–850 hPa keeps ~90 % and recovers ~61–67 % | §12 (COL vs DIR), §13 | Strong, consistent across both cases and both framings |
+| **F3** | **Time-consistency helps.** Inserting at both input frames (t0−6 h and t0) beats t0-only in every tier: +5–15 % retention (§12), +2.5–5 % error recovery (§13) | §12, §13 | Moderate (single case, small margins for DIR) |
+| **F4** | **Hypsometric Z adds a smaller increment.** At equal heat, BAL vs COL: +4–9 % retention (§12); +4–5 % recovery (§13) | §12, §13 | Weak — see caveat C1 |
+| **F5** | Best arm so far: column + Z + both frames (`BAL-IAU`): 70.5 % of the analysis error removed at Day 1 vs 28 % for `DIR-IMP` | §13 | Provisional ranking, not yet a result (C1–C4) |
+
+**The practical message already visible:** *do not overwrite only the 2 m temperature channel.* A surface observation has to be expressed as a vertically deep, time-consistent change before GraphCast will keep it.
+
+### 14.3 Claims in Sections 11–13 that do not hold as written
+
+| # | Claim | Problem | Status |
+|---|---|---|---|
+| **C1** | "Balance conclusively beats column" (§13.3.1) | **The inverse crime moved, it did not disappear.** In `test_exp0_twin_v2.py` the background error is built with the *same* vertical profile (1.0 / 0.6 / 0.2 at 1000/925/850) *and* the same hypsometric Z as the BAL operator. Only the horizontal analysis is independent. So BAL's vertical and mass structure matches the error exactly by construction; COL misses the Z part by construction | **Predetermined, not conclusive.** Needs an error whose vertical/multivariate structure the operators do not know (§14.4) |
+| **C2** | The >100 % peak overshoot is caused by the t0-only "implied tendency" (§11.2.3, §12.1) | **Refuted by §12's own table:** the both-frame arms, which have no implied tendency, overshoot *more* (BAL-IAU peak 143.5 % vs BAL-IMP 133.3 % at +12 h). And t0-only arms retain *less*, the opposite of trend extrapolation | Replace with: **the model damps a change that appears in only one frame (treats it as transient) and keeps — even amplifies — a change present in both frames.** The amplification itself is unexplained and should be investigated (it may cost accuracy on real data) |
+| **C3** | Both-frame insertion is "NASA GMAO GEOS IAU" | IAU distributes an increment gradually as a forcing term during model integration over a window. Adding the same increment to both input frames is a **time-consistent (steady) insertion**, not IAU. The closest IAU/replay analogue in this project is the **nudged arm (NUD)**, which has not been run | Rename to `-2F` (two-frame) or `-TC` (time-consistent); reserve "IAU-like" for NUD |
+| **C4** | Rankings and percentages | One case per experiment; no repeated dates, no uncertainty, no bit-identical rerun check reported | All numbers are anecdotes until ~10–20 dates |
+
+### 14.4 The main experiment that answers the goal: **Exp 0 v3 — cycling twin with a model background**
+
+This is the single experiment that turns F2–F5 into an answer. It removes the inverse crime by letting the *atmosphere and the model*, not our code, define the error.
+
+| Element | Design | Why |
+|---|---|---|
+| **Truth** | ERA5 analyses at t0−6 h, t0, and every 6 h to +72 h | Real atmosphere; forecast verification against later ERA5 analyses measures real skill |
+| **Background (the "company analysis")** | **GraphCast's own 24 h forecast valid at t0−6 h and t0**, started from ERA5 at t0−30 h / t0−24 h | Exactly how an operational background is made: realistic, flow-dependent, multivariate, internally consistent — and generated independently of every insertion operator. No MERRA-2 needed |
+| **Observations** | ERA5 `2t` sampled at ~300 CONUS points at t0−6 h and t0, + N(0, 0.5 K²) noise; 70 % used, 30 % withheld | The company case: surface stations only |
+| **Vertical spreading weights** | **Estimated, not assumed:** regress (truth − background) T at 1000/925/850 hPa and Z on the 2 m error over a 2018 training set (a climatological, NMC-style covariance). Freeze them | Removes C1: the operator's vertical structure comes from statistics, and on any given day it will not match the actual error exactly |
+| **Arms** | `DIR` (2t), `COL` (2t + regressed column T), `BAL` (COL + regressed or hypsometric Z), each **two-frame**; `DIR-1F` (t0 only) as a sensitivity arm; **`NUD`** (tapered nudging toward the analysed state over t0−24 h … t0, observations inserted each cycle) — the replay/IAU analogue; `SMO` smoothing control; `BG` and `TRUTH` bounds | Directly ranks the candidate insertion strategies, including the one the project is named for |
+| **Scores** | CONUS 2 m T and 850 hPa T RMSE vs ERA5 at +6 … +72 h; withheld-station error at t0; retention; first-step jump | Accuracy is primary; retention explains it |
+| **Sample** | S1: 10 dates (winter + summer, 00/12 UTC) → effect size and spread; then 20–40 dates with paired block bootstrap | Removes C4 |
+| **Cost** | ~9 arms × 20 dates × 3-day forecasts ≈ 180 rollouts ≈ minutes of GPU; the work is the regression and the NUD loop | Cheap relative to its value |
+
+**What each outcome would mean**
+
+| Outcome | Answer to the main goal |
+|---|---|
+| `BAL` ≥ `COL` ≫ `DIR` with estimated weights | Express surface observations as deep, balanced, two-frame increments; the ranking of F2–F5 survives an honest test |
+| `COL` ≈ `BAL` | Depth matters; the hypsometric Z step is optional |
+| `NUD` best | Model-consistent replay beats any hand-built increment — the IAU/replay principle transfers to ML models |
+| `SMO` ≈ best arm | The "gain" is blur, not information — a caution |
+| `DIR-1F` < `DIR` consistently | Time-consistent insertion is required for GraphCast (F3 confirmed) |
+
+### 14.5 Order of work from here
+
+1. **Housekeeping (hours):** rename the two-frame arms (C3), correct §11.2.3/§12.1 (C2), mark §13.3.1 as provisional (C1), add a bit-identical rerun check.
+2. **Exp 0 v3 on 10 dates (the main experiment).** This is the result that answers the project question.
+3. **Exp 0b (information propagation)** in parallel as the mechanism paper: explains *why* depth and time-consistency matter, and investigates the >100 % amplification.
+4. **Exp 2 (real mesonets / USCRN)** only after v3 gives a ranking — it confirms the ranking with real observations.
+5. **Exp 1 (MERRA-2 gap)** as a separate, NASA-relevant track once the MERRA-2 adapter is validated.
+
+
+---
+
+## 15. Main experiment implementation (21 Sep 2026): real-observation insertion
+
+`scripts/exp_main_real_obs.py` implements §14.4 with **real inserted data**. One initialization per run; outputs in `runs/exp_main/<t0>_<source>_<base>/`.
+
+| Choice | Options |
+|---|---|
+| Base state (`--base`) | `bg`: GraphCast 24 h forecast valid at t0 (company case, default) · `era5`: ERA5 itself |
+| Inserted data (`--obs-source`) | `isd` (ASOS/AWOS, real) · `uscrn` · `merra2` (T2M via OI) · `merra2-field` (T2M replacement) · `era5-synth` (twin control) |
+| Arms | ERA5, BASE, DIR-1F, DIR-2F, COL-2F, BAL-2F, REG-2F, NUD-DIR, NUD-BAL |
+| Verification | ERA5 analyses (grid) · **USCRN** (independent, never inserted) · withheld 30 % of the inserted network |
+| Diagnostics | t0 error (grid, withheld, USCRN), hypsometric residual, first-step jump, retention, vertical error profiles, regression coefficients |
+| Figures | fig1 t0 maps · fig2 vertical profiles · fig3 RMSE vs lead · fig4 gap closed · fig5 retention · fig6 t0 consistency · fig7 error maps |
+
+**Pipeline checks built in:** step-by-step chain == multi-step rollout, and bit-identical reruns. The script was run end to end on synthetic data with a stub model for every source/base combination; it has **not yet been run with GraphCast on real data**.
+
+**First runs to do (2018-01-15 12 UTC):**
+```bash
+# login node
+python scripts/download_era5_cloud.py  --date 2018-01-14 --time 12:00 --steps 16
+python scripts/download_isd_lite.py    --start 2018-01-14T00 --end 2018-01-19T00
+python scripts/download_uscrn_range.py --start 2018-01-14T00 --end 2018-01-19T00
+# GPU node
+source activate_env.sh
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source era5-synth   # twin sanity check
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd          # main result
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --base era5
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source merra2 --merra2-dir <NCCS MERRA-2 path>
+```

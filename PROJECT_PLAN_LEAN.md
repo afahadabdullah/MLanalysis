@@ -172,6 +172,12 @@ MERRA-2 is mapped to ERA5 statistics by removing the monthly-mean difference and
 - **Dev / tuning:** 2018, 24 starts (monthly, at 00 and 12 UTC). S0 and S1 dates come from this pool.
 - **Evaluation:** 2019–2020, **80 starts**. Balance 00 and 12 UTC and all four seasons, ~10 days apart.
 
+### Exp 0 v3: cycling twin with a model background — **the main experiment** (see `RESULTS.md` §14.4)
+
+Background = GraphCast's own 24 h forecast valid at t0 (from ERA5 at t0−24 h); truth = ERA5 analyses; observations = ERA5 `2t` sampled at ~300 CONUS points with 0.5 K noise at t0−6 h and t0; vertical spreading weights **estimated by regression on a 2018 training set** (never the same formula used to create the error); arms DIR / COL / BAL (two-frame), DIR-1F, NUD, SMO, BG, TRUTH; verified against ERA5 at +6…+72 h on 10 → 20–40 dates. This removes the remaining inverse crime of v1/v2 and directly ranks the insertion strategies.
+
+**Implemented with real data:** `scripts/exp_main_real_obs.py` (single initialization). The same arms are fed by **real** observations: `--obs-source isd` (NOAA ISD-Lite ASOS/AWOS, default), `uscrn`, `merra2` (MERRA-2 T2M as dense pseudo-stations + OI), `merra2-field` (MERRA-2 T2M replaces 2 m T directly), or `era5-synth` (twin control). `--base bg` inserts into GraphCast's 24 h background (company case); `--base era5` inserts into ERA5 itself (can real stations beat the training analysis?). Verification against ERA5 analyses **and** independent USCRN stations, plus withheld stations. Data: `download_era5_cloud.py --steps 16` (from t0−24 h), `download_isd_lite.py`, `download_uscrn_range.py`.
+
 ### Exp 0b: information propagation (impulse-response / Green's function view)
 
 **Reframing.** Instead of asking "how much error was removed", ask **how injected information travels through the model**. No truth and no observations are needed, so there is no inverse-crime risk: the increment *is* the information, and the question is how long it lives, where it goes, and what it turns into.
