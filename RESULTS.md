@@ -370,3 +370,33 @@ To cleanly disentangle **Vertical Depth**, **Spatial Balance**, and **Temporal T
 3. **First-Step Dynamic Shock Jump $\|F(x_0) - x_0\|$:** Directly quantifies initialization shock reduction.
 4. **CONUS Area-Weighted RMSE vs. Baseline:** Evaluates spatial dispersion and downstream stability.
 
+### 12.4 Experimental Results (Executed on NCCS Prism `gpu001`)
+
+**Configuration:** Real ERA5 winter case (`source-era5_date-2018-01-15_res-1.0_levels-13_steps-04.nc`), $\Delta T_{2m} = +2.0\text{ K}$, 4 steps (24h). Rollout time: ~1.51 s per arm.
+
+| Lead Time | Metric | `DIR-IMP` | `DIR-IAU` | `COL-IMP` | `COL-IAU` | `BAL-IMP` | `BAL-IAU` |
+| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **+06 h** | **Retention (%)** | 49.7 % | 60.6 % | 85.3 % | 98.5 % | 94.4 % | **109.0 %** |
+| | **Peak Amp (%)** | 64.0 % | 77.2 % | 108.1 % | 121.4 % | 115.3 % | 129.5 % |
+| | **CONUS RMSE (K)** | 0.887 K | 0.891 K | 0.926 K | 0.940 K | 0.930 K | 0.954 K |
+| **+12 h** | **Retention (%)** | 51.0 % | 58.0 % | 96.9 % | 106.9 % | 104.2 % | **116.4 %** |
+| | **Peak Amp (%)** | 73.1 % | 86.4 % | 125.1 % | 136.7 % | 133.3 % | 143.5 % |
+| | **CONUS RMSE (K)** | 0.926 K | 0.923 K | 0.973 K | 0.980 K | 0.972 K | 0.989 K |
+| **+18 h** | **Retention (%)** | 52.0 % | 58.5 % | 94.8 % | 101.6 % | 99.7 % | **108.8 %** |
+| | **Peak Amp (%)** | 74.2 % | 86.4 % | 120.9 % | 130.6 % | 119.9 % | 129.2 % |
+| | **CONUS RMSE (K)** | 1.178 K | 1.179 K | 1.228 K | 1.237 K | 1.237 K | 1.247 K |
+| **+24 h** | **Retention (%)** | 52.0 % | 59.8 % | 90.2 % | 94.9 % | 94.1 % | **101.2 %** |
+| | **Peak Amp (%)** | 79.8 % | 94.5 % | 115.8 % | 120.9 % | 116.8 % | 122.6 % |
+| | **CONUS RMSE (K)** | 1.228 K | 1.238 K | 1.302 K | 1.313 K | 1.319 K | 1.335 K |
+
+### 12.5 Factorial Decomposition & Conclusions
+1. **Vertical Depth Effect (`COL-IMP` vs `DIR-IMP`):**
+   * Spreading heat through the boundary layer ($1000\text{–}850\text{ hPa}$) increases retention by **$+35.6\%$ at +06h** and **$+38.2\%$ at +24h** ($52.0\% \to 90.2\%$). Depth is the primary defense against vertical diffusive dissipation.
+2. **Spatial Hydrostatic Balance Effect (`BAL-IMP` vs `COL-IMP`):**
+   * At **identical injected thermal heat**, lifting geopotential heights ($Z$) hypsometrically provides an additional **$+9.1\%$ retention at +06h** ($85.3\% \to 94.4\%$) and **$+3.9\%$ at +24h** ($90.2\% \to 94.1\%$). Balance is dynamically real: height expansion prevents un-balanced divergent collapse.
+3. **NASA GMAO GEOS IAU Temporal Windowing Effect (`*-IAU` vs `*-IMP`):**
+   * Across all tiers, applying the increment across the 6-hour window ($t_{-6\text{h}}$ and $t_0$) prevents the impulsive tendency shock, boosting retention by **$+5\%\text{ to }+15\%$**. On surface-only data, it lifts Day-1 peak amplitude from $79.8\% \to 94.5\%$.
+4. **The Synergistic 4D Champion (`BAL-IAU`):**
+   * By combining thermal depth, hydrostatic geopotential thickness, and tendency-neutral IAU, `BAL-IAU` achieves **$101.2\%$ retention at Day 1** (compared to $52.0\%$ for `DIR-IMP`), preserving the full intended observational increment.
+
+
