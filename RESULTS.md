@@ -637,3 +637,52 @@ With only ~15–40 USCRN stations passing the height filter, **station scores ne
 1. Rerun era5-synth and isd with the updated script (CONUS-land scoring, height-filtered verification).
 2. Add 10 dates (both 00 and 12 UTC, winter and summer) — the early/late trade-off and the NUD-BAL 24 h lead are the claims to test.
 3. Sweep observation density (`--n-obs` 300 / 800 / all land) in the twin to test whether the ranking depends on increment size.
+
+---
+
+## 18. First real-observation result: ISD stations into the GraphCast background (2018-01-15 12 UTC)
+
+Run `isd/bg`, 11 arms, 72 h, deterministic (reruns identical). 1546 ISD stations inserted, 662 withheld, 127 USCRN for independent verification. **Note:** this run used the script *before* the CONUS-land / terrain-filter update (the log still says "(CONUS)" and has no "usable for verification" line). Rerun after pulling for final numbers; the conclusions below are about signs and ordering.
+
+### 18.1 At t0: real stations make the state better than ERA5 at independent stations
+
+| | Withheld ISD | USCRN (independent) | ERA5 grid (CONUS box) |
+|---|---|---|---|
+| ERA5 | 2.142 K | 2.790 K | 0 |
+| BASE (GraphCast 24 h background) | 2.364 | 2.794 | 1.111 |
+| After insertion (DIR/COL/BAL) | **1.924** | **2.639** | 1.440 |
+| NUD-BAL | 1.960 | **2.630** | 1.342 |
+
+The inserted state fits both withheld stations (−19 %) and the fully independent USCRN network (−5.5 %) **better than ERA5 itself**, while moving *away* from the ERA5 grid. That is the expected signature of real information that ERA5's 1° grid does not contain.
+
+### 18.2 In the forecast: most of that advantage is lost within 6 h
+
+Withheld-ISD RMSE (K), same verification points for all arms:
+
+| Lead | ERA5 start | BASE | best insertion arm | insertion arms recover this much of the BASE→ERA5 gap |
+|---|---|---|---|---|
+| t0 | 2.142 | 2.364 | 1.924 (all static arms) | **198 %** (better than ERA5) |
+| +6 h | 1.799 | 2.001 | 1.911 (NUD-DIR) | 45 % |
+| +12 h | 1.858 | 1.999 | 1.915 (NUD-DIR) | 60 % |
+| +24 h | 2.353 | 2.502 | 2.391 (NUD-BAL) | 74 % |
+| +48 h | 2.746 | 2.916 | 2.855 (NUD-BAL) | 36 % |
+| +72 h | 2.931 | 3.069 | 2.992 (COL-FIX) | 56 % |
+
+- **Every insertion arm improves on BASE at every lead** against withheld stations (1–4.5 %), so real station data *do* help an off-the-shelf model, but by less than starting from ERA5 (4.5–10 %).
+- **The t0 lead over ERA5 disappears in the first step.** At t0 the inserted state is 0.22 K better than ERA5 at withheld stations; at +6 h it is 0.11 K worse. GraphCast keeps the part of the correction that is consistent with the rest of its state and drops the station detail that ERA5 does not have. A surface-only correction cannot compete with a full 3-D analysis after one step.
+- **Same lead-time pattern as the twin (§17):** surface-only and nudging arms are best at 6–12 h; nudging (NUD-BAL) is best at 24–48 h; the deep fixed column (COL-FIX) is best at 72 h and worst at 6 h. Balance (Z update, BAL-FIX vs COL-FIX) again adds nothing.
+- **USCRN agrees in sign** from 12 h on (all arms +9 to +11 % at 12 h, +0.5 to +1.4 % later; NUD-BAL best at 12–48 h). At 12 h the ERA5 start is *worse* than BASE at USCRN (−7 %) while every insertion arm is better, a hint that the station information carries local value that ERA5 lacks. With 127 unfiltered stations and one case this is suggestive only.
+- **Against the ERA5 grid all arms are worse (−10 to −30 % early), converging to ≈0 or slightly positive by 72 h.** This is the representativeness mismatch between stations and ERA5's grid, not forecast degradation (see §16.3).
+
+### 18.3 Station error depends on time of day
+Errors against stations drop from t0 (12 UTC, pre-dawn inversion) to +6 h (18 UTC, mixed afternoon boundary layer) for every arm, including ERA5. Compare arms at the same lead, and prefer same-time-of-day pairs (t0, +24, +48, +72 h) when judging retention.
+
+### 18.4 What it answers so far (one case)
+1. Direct insertion of real surface stations helps an ERA5-trained model a little (≈1–4 % against independent stations), without retraining.
+2. Most of the observational gain at t0 is not retained. The model reverts toward its own 3-D-consistent evolution within one 6 h step.
+3. **Best method depends on lead:** surface/nudged for 6–12 h, nudged (NUD-BAL) for 24–48 h, deep fixed column for 72 h. Nudging is the most consistently good across leads. Hydrostatic Z balance adds nothing measurable.
+
+### 18.5 Next
+1. Pull the updated script and rerun `isd/bg` and `era5-synth/bg` (CONUS-land scoring, terrain-filtered verification, withheld scores in the twin).
+2. **Multi-date runs** (10 dates: 00 and 12 UTC, winter and summer) to test the lead-dependent ranking and the NUD-BAL result. Single-case differences of 1 % are not yet a conclusion.
+3. To test *why* the t0 gain is lost: nudge more times (NUD with obs at every 6 h for 48 h), and add a hybrid arm (nudging + fixed column) to see whether depth and repetition together keep the station information past 6 h.
