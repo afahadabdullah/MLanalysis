@@ -928,19 +928,22 @@ for k, lead in enumerate(LEADS):
     nets = {"uscrn": None if VER is None else VER[VER.time == tlead],
             "withheld": ALLDF[(ALLDF.time == tlead) & ALLDF.sid.isin(HOLD_SIDS)]}
     for net, df in nets.items():
-        eb = station_err(pred_frame(FC["BASE"], k)["2m_temperature"], df)
+      for ref in ("BASE", "ERA5"):
+        if ref == "ERA5" and args.base == "era5":
+            continue
+        eb = station_err(pred_frame(FC[ref], k)["2m_temperature"], df)
         if len(eb) < 5:
             continue
         idx = _rngb.integers(0, len(eb), size=(args.boot, len(eb)))
         rb = np.sqrt(np.mean(eb[idx] ** 2, axis=1))
         rb0 = np.sqrt(np.mean(eb ** 2))
         for name in ARMS:
-            if name == "BASE":
+            if name in ("BASE", ref):
                 continue
             ea = station_err(pred_frame(FC[name], k)["2m_temperature"], df)
             ra = np.sqrt(np.mean(ea[idx] ** 2, axis=1))
             dpct = 100 * (ra - rb) / rb
-            BOOT.append(dict(arm=name, lead_h=lead, net=net, n_st=len(eb),
+            BOOT.append(dict(arm=name, lead_h=lead, net=net, ref=ref, n_st=len(eb),
                              d_pct=100 * (np.sqrt(np.mean(ea ** 2)) - rb0) / rb0,
                              lo=float(np.percentile(dpct, 2.5)), hi=float(np.percentile(dpct, 97.5))))
 BOOT = pd.DataFrame(BOOT)
@@ -1175,6 +1178,8 @@ savefig(fig, "fig7_error_maps.png")
 
 # (8) bootstrap: % change in station RMSE vs BASE with 95 % CI
 if len(BOOT):
+    BOOT_ALL = BOOT
+    BOOT = BOOT_ALL[BOOT_ALL.ref == "BASE"]
     nets = [n for n in ("uscrn", "withheld") if n in set(BOOT.net)]
     lsel = [l for l in (6, 12, 24, 48, 72) if l in LEADS]
     arms_b = [a for a in ORDER if a not in ("BASE",) and a in set(BOOT.arm)]
@@ -1253,10 +1258,13 @@ if args.base == "era5":
 print("\nGAP CLOSED, CONUS 2 m T vs ERA5 (%)  [0 = BASE, 100 = ERA5 start]")
 print("   (not defined for --base era5)" if args.base == "era5" else
       (100 * key.loc[[a for a in ORDER if a in key.index]]).round(1).to_string())
-if len(BOOT):
-    print("\nPAIRED STATION BOOTSTRAP: % change in 2 m T RMSE vs BASE  [95 % CI]  (* = significant, <0 = better)")
+for _ref in ("BASE", "ERA5"):
+  if not len(BOOT) or _ref not in set(BOOT_ALL.ref):
+    continue
+  print(f"\nPAIRED STATION BOOTSTRAP: % change in 2 m T RMSE vs {_ref}  [95 % CI]  (* = significant, <0 = better)")
+  if True:
     for net in ("uscrn", "withheld"):
-        sub = BOOT[BOOT.net == net]
+        sub = BOOT_ALL[(BOOT_ALL.net == net) & (BOOT_ALL.ref == _ref)]
         if sub.empty:
             continue
         lsel = [l for l in (6, 12, 24, 48, 72) if l in LEADS]
