@@ -239,3 +239,34 @@ python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --lon
 python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --long-nud 72 --hyb-tau 12 \
     --arms REPLAY72,HYB72-DIR,HYB72-BAL-PBL --outdir runs/exp_main/20180115T12_isd_bg_hybtau12
 ```
+
+### 11.3 Resolution test: full GraphCast at 0.25° / 37 levels (`--model large`)
+
+**Question:** does the same experiment give better results with the 0.25° model? Expected effects: less representativeness error between 2 m T grid values and stations (terrain, coasts, valleys), station increments at their own scale instead of smeared into 1° cells, and a better-resolved boundary layer (37 levels: 1000, 975, 950, 925, 900, 875, 850 … hPa).
+
+**What differs besides resolution** (so the comparison is of the *system*, not resolution alone): checkpoint `GraphCast - ERA5 1979-2017 - resolution 0.25 - pressure levels 37 - mesh 2to6 - precipitation input and output.npz` (trained to 2017, so 2018 is still out of sample; the "operational" 0.25° checkpoint is fine-tuned on HRES 2016-2021 and must **not** be used for 2018); finer model orography, so the ECMWF height window keeps more stations. Compare each resolution's arms **against its own ERA5 start and BASE**, then compare those relative gains across resolutions.
+
+**Arms (4 + references):** `ERA5`, `BASE`, `DIR-1F` (simple insertion), `NUD6-DIR` (best short nudging), `REPLAY72` (ERA5 replay), `HYB72-DIR` (replay + stations). Only the selected arms are built, which matters at 0.25° (~1 GB per model state).
+
+**Data and hardware**
+| Item | Command / note |
+|---|---|
+| Checkpoint | `gs://dm_graphcast/params/GraphCast - ERA5 1979-2017 - resolution 0.25 - pressure levels 37 - mesh 2to6 - precipitation input and output.npz` → `data/params/` (stats files are the same as for small) |
+| ERA5 0.25°, 37 levels | `python scripts/download_era5_arco025.py --date 2018-01-12 --time 12:00 --steps 24` → `data/era5/source-era5_date-2018-01-12_res-0.25_levels-37_steps-24.zarr` (from Google ARCO-ERA5; ~26 frames, **~15–25 GB**; written frame by frame; put `data/era5` on nobackup first) |
+| Stations | the ISD and USCRN files for 12–18 Jan already downloaded |
+| GPU | ≥40 GB: try the DGX A100 node (`salloc -G1 -p dgx`); if out of memory, an H100 96 GB node (`-p grace`, ARM — needs an aarch64 JAX build) |
+| Host RAM | ~40–60 GB peak (a 12-step rollout of 37-level fields); request `--mem=128G` |
+| Time | ~120 model steps plus compilation; expect tens of minutes |
+
+**Run:**
+```bash
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --model large --long-nud 72 \
+    --nud-windows 6 --nud-types DIR --arms DIR-1F,NUD6-DIR,REPLAY72,HYB72-DIR
+# (outputs: runs/exp_main/20180115T12_isd_bg_r025/)
+# same arms at 1 deg for a like-for-like table:
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --long-nud 72 \
+    --nud-windows 6 --nud-types DIR --arms DIR-1F,NUD6-DIR,REPLAY72,HYB72-DIR --outdir runs/exp_main/20180115T12_isd_bg_r1_4arms
+```
+Optional sensitivity at 0.25°: `--oi-L 150` (station increments at a scale the finer grid can hold).
+
+`--lite` (default on for `large`) keeps only 2 m T, T850 and Z500 from each forecast; scores are identical to full storage (checked at 1°).

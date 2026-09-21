@@ -148,7 +148,31 @@ ap.add_argument("--proj", default=os.environ.get("PROJ", "/home/afahad/project/M
 ap.add_argument("--outdir", default=None)
 ap.add_argument("--dpi", type=int, default=150)
 ap.add_argument("--skip-checks", action="store_true", help="Skip determinism/consistency checks")
+ap.add_argument("--model", default="small", choices=["small", "large"],
+                help="small = GraphCast_small (1 deg, 13 levels, ERA5 1979-2015); "
+                     "large = GraphCast (0.25 deg, 37 levels, ERA5 1979-2017)")
+ap.add_argument("--params", default=None, help="Explicit checkpoint .npz path (overrides --model)")
+ap.add_argument("--lite", type=int, default=None,
+                help="Keep only 2 m T, T850, Z500 from forecasts to save memory (default: on for --model large)")
 args = ap.parse_args()
+
+MODEL_SPEC = {
+    "small": dict(res="1.0", nlev=13, tag="",
+                  ckpt="GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - "
+                       "mesh 2to5 - precipitation input and output.npz"),
+    "large": dict(res="0.25", nlev=37, tag="_r025",
+                  ckpt="GraphCast - ERA5 1979-2017 - resolution 0.25 - pressure levels 37 - "
+                       "mesh 2to6 - precipitation input and output.npz"),
+}[args.model]
+if args.lite is None:
+    args.lite = 1 if args.model == "large" else 0
+WANT = None if args.arms == "all" else ({"ERA5", "BASE"} | {a.strip() for a in args.arms.split(",")})
+
+
+def want(name):
+    """Build (possibly expensive) arm chains only if they will be forecast."""
+    return WANT is None or name in WANT
+
 
 T0 = np.datetime64(dt.datetime.fromisoformat(args.t0))
 t_launch = dt.datetime.fromisoformat(args.t0) - dt.timedelta(hours=24)
@@ -160,13 +184,15 @@ if args.data:
     DATA = args.data
 else:
     _t_l = dt.datetime.fromisoformat(args.t0) - dt.timedelta(hours=LEAD_BACK_H)
+    _stem = f"res-{MODEL_SPEC['res']}_levels-{MODEL_SPEC['nlev']}"
+    _ext = ".zarr" if args.model == "large" else ".nc"
     DATA = os.path.join(PROJ, "data", "era5",
-                        f"source-era5_date-{_t_l:%Y-%m-%d}_res-1.0_levels-13_steps-{LEAD_BACK_H // 6 + 12:02d}.nc")
+                        f"source-era5_date-{_t_l:%Y-%m-%d}_{_stem}_steps-{LEAD_BACK_H // 6 + 12:02d}{_ext}")
     if not os.path.exists(DATA) and not args.long_nud:     # fall back to the standard 24 h-window file
         DATA = os.path.join(PROJ, "data", "era5",
-                            f"source-era5_date-{t_launch:%Y-%m-%d}_res-1.0_levels-13_steps-16.nc")
+                            f"source-era5_date-{t_launch:%Y-%m-%d}_{_stem}_steps-16{_ext}")
 TAG = dt.datetime.fromisoformat(args.t0).strftime("%Y%m%dT%H")
-OUT = args.outdir or os.path.join(PROJ, "runs", "exp_main", f"{TAG}_{args.obs_source}_{args.base}")
+OUT = args.outdir or os.path.join(PROJ, "runs", "exp_main", f"{TAG}_{args.obs_source}_{args.base}{MODEL_SPEC['tag']}")
 if args.base == "era5":
     _w = [w for w in args.nud_windows.split(",") if w.strip() and int(w) <= 12]
     if len(_w) < len([w for w in args.nud_windows.split(",") if w.strip()]):
@@ -207,9 +233,9 @@ def _default_csv(prefix):
         best = c[0] if c else None
     return best
 os.makedirs(OUT, exist_ok=True)
-PARAMS = os.path.join(PROJ, "data", "params",
-                      "GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - "
-                      "mesh 2to5 - precipitation input and output.npz")
+PARAMS = args.params or os.path.join(PROJ, "data", "params", MODEL_SPEC["ckpt"])
+if not os.path.exists(PARAMS):
+    raise SystemExit(f"Checkpoint not found: {PARAMS}\n(download it into data/params/ from gs://dm_graphcast/params/)")
 STATS = os.path.join(PROJ, "data", "stats")
 RNG = np.random.default_rng(args.seed)
 G, RD = 9.80665, 287.05
@@ -255,10 +281,18 @@ def _run(rng, inputs, targets_template, forcings):
 # 2. Data, time indexing, masks
 # =============================================================================
 print("\n[2] Loading ERA5 window ...")
-try:
-    DS = xr.load_dataset(DATA, decode_timedelta=True).compute()
-except Exception:
-    DS = xr.load_dataset(DATA).compute()
+if not os.path.exists(DATA):
+    raise SystemExit(f"ERA5 input not found: {DATA}")
+if DATA.endswith(".zarr"):                      # large 0.25-deg inputs: open lazily
+    DS = xr.open_zarr(DATA, decode_timedelta=True)
+elif os.path.getsize(DATA) > 8e9:
+    DS = xr.open_dataset(DATA, decode_timedelta=True)
+else:
+    try:
+        DS = xr.load_dataset(DATA, decode_timedelta=True).compute()
+    except Exception:
+        DS = xr.load_dataset(DATA).compute()
+print(f"   model = {args.model} ({os.path.basename(PARAMS)}), lite forecasts = {bool(args.lite)}")
 
 DATETIMES = DS.coords["datetime"].values
 DATETIMES = DATETIMES[0] if DATETIMES.ndim == 2 else DATETIMES
@@ -301,7 +335,7 @@ TRAIN = (LATG >= 25) & (LATG <= 60) & (LSM > 0.5) & ~OI_BOX & (ZSFC < 1000.0 * 9
 
 def window(start, nsteps):
     """inputs/targets/forcings for inputs at frames start,start+1 and nsteps targets."""
-    sub = DS.isel(time=slice(start, start + 2 + nsteps))
+    sub = DS.isel(time=slice(start, start + 2 + nsteps)).compute()
     return data_utils.extract_inputs_targets_forcings(
         sub, target_lead_times=slice("6h", f"{nsteps*6}h"), **dataclasses.asdict(task_config))
 
@@ -317,7 +351,36 @@ def era5_frame(idx):
             for v in STATE_VARS}
 
 
+class _Lev:
+    """Holds selected pressure levels of a field, indexable by the full-level index."""
+    def __init__(self, d):
+        self.d = d
+
+    def __getitem__(self, i):
+        return self.d[i]
+
+
+def lite_forecast(preds):
+    """Reduce a GraphCast rollout to the fields the scores/plots use (2 m T, T850, Z500)."""
+    out = []
+    for k in range(preds.sizes["time"]):
+        fr = {}
+        for v, levs in (("2m_temperature", None), ("temperature", (850,)), ("geopotential", (500,))):
+            da = preds[v].isel(time=k)
+            if "batch" in da.dims:
+                da = da.isel(batch=0)
+            if levs is None:
+                fr[v] = np.asarray(da.transpose(*REST[v]).values, dtype=np.float32)
+            else:
+                fr[v] = _Lev({LIDX[p]: np.asarray(da.sel(level=p).transpose(*[d for d in REST[v] if d != "level"]).values,
+                                                  dtype=np.float32) for p in levs})
+        out.append(fr)
+    return out
+
+
 def pred_frame(preds, k):
+    if isinstance(preds, list):                  # lite forecast
+        return preds[k]
     out = {}
     for v in STATE_VARS:
         da = preds[v].isel(time=k)
@@ -734,13 +797,16 @@ if args.base == "bg":
     ARMS["BASE"] = (BG_A, BG_B)
 else:
     ARMS["BASE"] = ARMS["ERA5"]
-ARMS["DIR-1F"] = (BASE_A, apply_increment(BASE_B, INC_B, "DIR"))
+if want("DIR-1F"):
+    ARMS["DIR-1F"] = (BASE_A, apply_increment(BASE_B, INC_B, "DIR"))
 for k in ("DIR", "COL", "BAL", "REG", "COL-FIX", "BAL-FIX", "COL-PBL", "BAL-PBL"):
-    ARMS[f"{k}-2F" if ("FIX" not in k and "PBL" not in k) else f"{k}"] = (
-        apply_increment(BASE_A, INC_A, k), apply_increment(BASE_B, INC_B, k))
+    _nm = f"{k}-2F" if ("FIX" not in k and "PBL" not in k) else f"{k}"
+    if want(_nm):
+        ARMS[_nm] = (apply_increment(BASE_A, INC_A, k), apply_increment(BASE_B, INC_B, k))
 # M1b: bias-only control (uniform shift by the mean innovation, both frames)
-ARMS["BIAS"] = (apply_increment(BASE_A, bias_increment(BASE_A["2m_temperature"], I0 - 1), "DIR"),
-                apply_increment(BASE_B, bias_increment(BASE_B["2m_temperature"], I0), "DIR"))
+if want("BIAS"):
+    ARMS["BIAS"] = (apply_increment(BASE_A, bias_increment(BASE_A["2m_temperature"], I0 - 1), "DIR"),
+                    apply_increment(BASE_B, bias_increment(BASE_B["2m_temperature"], I0), "DIR"))
 _w_b, _dep_b, _ps_b = diagnose_pbl(BASE_B)
 _mixed_b = np.any(np.stack([w > 0 for w in _w_b.values()]), axis=0) if _w_b else np.zeros_like(_dep_b, bool)
 PBL_STATS = dict(stable_frac_conus_land=float(np.mean(~_mixed_b[CONUS_LAND])),
@@ -762,6 +828,8 @@ def iau_chain(kind):
 
 if args.base == "bg" and M2FIELD is None:
     for k in [x.strip() for x in args.iau_kinds.split(",") if x.strip()]:
+        if not want(f"IAU-{k}"):
+            continue
         t_ = time.time()
         ARMS[f"IAU-{k}"] = iau_chain(k)
         print(f"   IAU-{k}: 4 x 1/4 of the t0 increment, {time.time()-t_:.1f} s")
@@ -840,17 +908,21 @@ if args.long_nud:
     else:
         t_ = time.time()
         H = args.long_nud
-        ARMS[f"FREE{H}"] = long_nudge_chain("DIR", 0.0, H)
+        if want(f"FREE{H}"):
+            ARMS[f"FREE{H}"] = long_nudge_chain("DIR", 0.0, H)
         for k in [x.strip() for x in args.long_nud_types.split(",") if x.strip()]:
-            ARMS[f"NUD{H}-{k}"] = long_nudge_chain(k, ALPHA, H)
+            if want(f"NUD{H}-{k}"):
+                ARMS[f"NUD{H}-{k}"] = long_nudge_chain(k, ALPHA, H)
         print(f"   long surface-only nudging {H} h ({H // 6} cycles, alpha={ALPHA:.2f}) "
               f"+ FREE{H} control: {time.time()-t_:.1f} s")
         if args.hyb_tau > 0:
             t_ = time.time()
             A_E = 1.0 - np.exp(-6.0 / args.hyb_tau)
-            ARMS[f"REPLAY{H}"] = long_nudge_chain("DIR", 0.0, H, era5_alpha=A_E)
+            if want(f"REPLAY{H}"):
+                ARMS[f"REPLAY{H}"] = long_nudge_chain("DIR", 0.0, H, era5_alpha=A_E)
             for k in [x.strip() for x in args.hyb_types.split(",") if x.strip()]:
-                ARMS[f"HYB{H}-{k}"] = long_nudge_chain(k, ALPHA, H, era5_alpha=A_E, tag=f"hyb{H}-{k}")
+                if want(f"HYB{H}-{k}"):
+                    ARMS[f"HYB{H}-{k}"] = long_nudge_chain(k, ALPHA, H, era5_alpha=A_E, tag=f"hyb{H}-{k}")
             print(f"   hybrid cycling {H} h: full state relaxed to ERA5 (alpha_ERA5={A_E:.2f}, tau={args.hyb_tau} h) "
                   f"+ stations (alpha={ALPHA:.2f}); REPLAY{H} control: {time.time()-t_:.1f} s")
 
@@ -859,6 +931,8 @@ for w in WINDOWS:
     for k in [x.strip() for x in args.nud_types.split(",") if x.strip()]:
         t_ = time.time()
         arm_key = f"NUD{w}-{k}" if (len(WINDOWS) > 1 or w != 24) else f"NUD-{k}"
+        if not want(arm_key):
+            continue
         ARMS[arm_key] = nudge_chain(k, ALPHA, window_h=w)
         print(f"   {arm_key}: window={w}h, alpha={ALPHA:.2f} (tau={args.nud_tau} h), obs={args.nud_obs}, {time.time()-t_:.1f} s")
 
@@ -893,9 +967,13 @@ FC, ROWS = {}, []
 for name, (A, B) in ARMS.items():
     t_ = time.time()
     FC[name] = forecast(A, B, I0 - 1, args.steps)
+    if args.lite:
+        FC[name] = lite_forecast(FC[name])
     print(f"   {name:8s} {time.time()-t_:5.1f} s")
 
 NOISE_FC = forecast(TRUE_A, TRUE_B, I0 - 1, args.steps)        # rerun of ERA5 arm = run-to-run noise
+if args.lite:
+    NOISE_FC = lite_forecast(NOISE_FC)
 LEADS = [6 * (k + 1) for k in range(args.steps)]
 L850, L500 = LIDX[850], LIDX[500]
 for name in ARMS:
