@@ -135,7 +135,12 @@ ap.add_argument("--nud-tau", type=float, default=6.0, help="Nudging relaxation t
 ap.add_argument("--long-nud", type=int, default=0,
                 help="Long nudging spin-up (h, multiple of 6), e.g. 72 = 6-hourly nudging for 3 days before t0 "
                      "(base bg only; needs an ERA5 file starting at t0-(long+6)h and stations from then)")
-ap.add_argument("--long-nud-types", default="BAL", help="Increment type(s) for the long nudging arm(s)")
+ap.add_argument("--long-nud-types", default="BAL", help="Increment type(s) for the long surface-only nudging arm(s)")
+ap.add_argument("--hyb-tau", type=float, default=6.0,
+                help="Hybrid cycling: relaxation time (h) of the FULL state toward ERA5 at every 6 h cycle "
+                     "(provider-analysis stand-in); 0 disables the hybrid arms")
+ap.add_argument("--hyb-types", default="DIR,BAL-PBL",
+                help="Station increment type(s) added on top of the ERA5-relaxed state in the hybrid arms")
 ap.add_argument("--nud-obs", default="all", choices=["all", "last2"],
                 help="Nudge with obs at all cycles or only last 2")
 ap.add_argument("--seed", type=int, default=42)
@@ -805,16 +810,26 @@ def nudge_chain(kind, alpha, window_h=24):
         raise ValueError(f"Unsupported nudging window: {window_h}h (supported: 6, 12, 24)")
 
 
-def long_nudge_chain(kind, alpha, hours):
-    """Operational-style spin-up: cold start from ERA5 at t0-(hours+6)h / t0-hours, then 6-hourly
-    GraphCast steps with a nudging increment from that time's stations after every step, up to t0.
-    alpha = 0 gives the free-running control (a `hours`-long GraphCast forecast)."""
+def long_nudge_chain(kind, alpha, hours, era5_alpha=0.0, tag=None):
+    """Operational-style cycling: cold start from ERA5 at t0-(hours+6)h / t0-hours, then 6-hourly
+    GraphCast steps up to t0. After every step:
+      1. (hybrid) relax the FULL state - every variable, every level - toward ERA5 at that time
+         with gain era5_alpha (ERA5 = stand-in for a provider analysis / reanalysis replay), then
+      2. add the station increment of type `kind` with gain alpha, computed against the relaxed state.
+    era5_alpha = 0, alpha > 0 : surface-only nudging (upper air free to drift)
+    era5_alpha > 0, alpha = 0 : reanalysis replay only (no own observations)
+    both > 0                  : hybrid = reanalysis replay + own surface observations
+    both = 0                  : free-running control"""
     n = hours // 6
     A, B = era5_frame(I0 - n - 1), era5_frame(I0 - n)
     for idx in range(I0 - n + 1, I0 + 1):
         C = pred_frame(forecast(A, B, idx - 2, 1), 0)
+        if era5_alpha > 0:
+            E = era5_frame(idx)
+            C = {v: (C[v] + era5_alpha * (E[v] - C[v])).astype(np.float32) for v in STATE_VARS}
         if alpha > 0:
-            C = apply_increment(C, oi_increment(C["2m_temperature"], idx, f"nud{hours}-{kind}"), kind, scale=alpha)
+            C = apply_increment(C, oi_increment(C["2m_temperature"], idx, tag or f"nud{hours}-{kind}"),
+                                kind, scale=alpha)
         A, B = B, C
     return A, B
 
@@ -824,11 +839,20 @@ if args.long_nud:
         print("NOTE: --long-nud applies to --base bg with station/OI sources only; skipped")
     else:
         t_ = time.time()
-        ARMS[f"FREE{args.long_nud}"] = long_nudge_chain("DIR", 0.0, args.long_nud)
+        H = args.long_nud
+        ARMS[f"FREE{H}"] = long_nudge_chain("DIR", 0.0, H)
         for k in [x.strip() for x in args.long_nud_types.split(",") if x.strip()]:
-            ARMS[f"NUD{args.long_nud}-{k}"] = long_nudge_chain(k, ALPHA, args.long_nud)
-        print(f"   long nudging {args.long_nud} h ({args.long_nud // 6} cycles, alpha={ALPHA:.2f}) "
-              f"+ FREE{args.long_nud} control: {time.time()-t_:.1f} s")
+            ARMS[f"NUD{H}-{k}"] = long_nudge_chain(k, ALPHA, H)
+        print(f"   long surface-only nudging {H} h ({H // 6} cycles, alpha={ALPHA:.2f}) "
+              f"+ FREE{H} control: {time.time()-t_:.1f} s")
+        if args.hyb_tau > 0:
+            t_ = time.time()
+            A_E = 1.0 - np.exp(-6.0 / args.hyb_tau)
+            ARMS[f"REPLAY{H}"] = long_nudge_chain("DIR", 0.0, H, era5_alpha=A_E)
+            for k in [x.strip() for x in args.hyb_types.split(",") if x.strip()]:
+                ARMS[f"HYB{H}-{k}"] = long_nudge_chain(k, ALPHA, H, era5_alpha=A_E, tag=f"hyb{H}-{k}")
+            print(f"   hybrid cycling {H} h: full state relaxed to ERA5 (alpha_ERA5={A_E:.2f}, tau={args.hyb_tau} h) "
+                  f"+ stations (alpha={ALPHA:.2f}); REPLAY{H} control: {time.time()-t_:.1f} s")
 
 WINDOWS = [int(w.strip()) for w in args.nud_windows.split(",") if w.strip()]
 for w in WINDOWS:
@@ -1005,8 +1029,9 @@ COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d6
        "BIAS": "#7f7f7f", "COL-PBL": "#bcbd22", "BAL-PBL": "#8c564b", "IAU-DIR": "#ff9896", "IAU-PBL": "#c49c94",
        "IAU-BAL-PBL": "#9edae5", "NUD-BAL-PBL": "#006d2c", "NUD6-BAL-PBL": "#31a354", "NUD12-BAL-PBL": "#74c476",
        "NUD24-BAL-PBL": "#006d2c", "NUD6-PBL": "#a1d99b", "NUD24-PBL": "#41ab5d",
-       "NUD72-BAL": "#00441b", "NUD72-BAL-PBL": "#00441b", "NUD72-DIR": "#c51b7d", "FREE72": "#525252"}
-STY = {"ERA5": "--", "BASE": "--", "FREE72": ":", "FREE48": ":", "FREE120": ":"}
+       "NUD72-BAL": "#00441b", "NUD72-BAL-PBL": "#00441b", "NUD72-DIR": "#c51b7d", "FREE72": "#525252",
+       "REPLAY72": "#08519c", "HYB72-DIR": "#e6550d", "HYB72-BAL-PBL": "#a63603", "HYB72-BAL": "#fd8d3c"}
+STY = {"ERA5": "--", "BASE": "--", "FREE72": ":", "FREE48": ":", "FREE120": ":", "REPLAY72": "-."}
 EXT = [230, 300, 20, 55]
 
 

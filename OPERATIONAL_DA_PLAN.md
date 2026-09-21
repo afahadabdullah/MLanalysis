@@ -211,3 +211,31 @@ python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --lon
     --nud-windows 24 --nud-types BAL --arms DIR-1F,NUD-BAL,FREE72,NUD72-BAL
 ```
 The same longer ERA5 file also serves every other arm, so it can replace the steps-16 file.
+
+### 11.2 Fixed: hybrid cycling — full state relaxed to ERA5 + surface stations (`--long-nud 72`, `--hyb-tau`)
+
+§20 showed that surface-only nudging for 3 days lets the free atmosphere drift (t0 T850 error 2.0 K vs 0.75 K for the 24 h background). Operational systems avoid this by constraining the whole atmosphere every cycle. The long chain now has two extra arms; after **every** 6 h GraphCast step:
+
+1. **Every variable at every level** (T, Z, u, v, w, q on 13 levels, and 2 m T, 10 m winds, MSLP, precipitation) is relaxed toward ERA5 at that time: `x ← x + α_E (ERA5 − x)`, α_E = 1 − exp(−6 h/τ_E), default τ_E = 6 h (α_E = 0.63). ERA5 stands in for the provider analysis; this is the reanalysis *replay* idea from the original plan.
+2. The **station increment** (type DIR or BAL-PBL) is then computed against that relaxed state and added with α = 0.63.
+
+| Arm | ERA5 relaxation | Stations | Question it answers |
+|---|---|---|---|
+| `FREE72` | no | no | drift of a 3-day ML forecast |
+| `NUD72-BAL` | no | yes | surface-only cycling (drifts aloft, §20) |
+| **`REPLAY72`** | **yes** | no | ERA5 replay alone: model-consistent version of ERA5, no own data |
+| **`HYB72-DIR`**, **`HYB72-BAL-PBL`** | **yes** | **yes** | replay + own surface observations: the operational target |
+
+Key comparisons: **HYB72 vs REPLAY72** = value of the stations inside a well-anchored cycle; **REPLAY72 vs ERA5 start** = does a model-consistent (replayed) ERA5 forecast better than raw ERA5 (the original project question); **HYB72 vs NUD24-* / NUD6-*** = does 3 days of anchored cycling keep more station information than a short window.
+
+`--hyb-tau` sets how tightly the state follows ERA5 (6 h = strong; 12–24 h = weaker, leaves more room for the model and the stations). `--hyb-types` sets the station increment type(s).
+
+**Run** (uses the steps-24 ERA5 file and the 12–18 Jan ISD/USCRN files already downloaded):
+```bash
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --long-nud 72 \
+    --nud-windows 6,24 --nud-types DIR,BAL-PBL \
+    --arms DIR-1F,NUD6-DIR,NUD24-BAL-PBL,FREE72,NUD72-BAL,REPLAY72,HYB72-DIR,HYB72-BAL-PBL
+# sensitivity to the ERA5 anchoring strength:
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --long-nud 72 --hyb-tau 12 \
+    --arms REPLAY72,HYB72-DIR,HYB72-BAL-PBL --outdir runs/exp_main/20180115T12_isd_bg_hybtau12
+```

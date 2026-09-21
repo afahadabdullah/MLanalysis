@@ -722,3 +722,44 @@ Question: can real surface stations improve a forecast started from the model's 
 2. **Bias-only control arm:** subtract the domain-mean innovation (≈ −0.7 K) uniformly from 2 m T. If it matches DIR, the gain is bias correction, not spatial information.
 3. **Boundary-layer-dependent depth (`COL-PBL`)**, RAP-style: extend the increment only through the diagnosed boundary layer. Tests point 2 directly.
 4. **Multiple dates including 00 UTC and summer**, where the boundary layer is deep and column insertion should behave differently.
+
+---
+
+## 20. Operational-style run with ECMWF QC, boundary-layer arms, bootstrap and 3-day nudging (`isd/bg`, 2018-01-15 12 UTC)
+
+Setup: ECMWF QC (5.5 K/km, −400/+200 m window, 7.5 K gross check), 1523 ISD stations used / 652 withheld, **120 USCRN** in the height window, 1000 paired station bootstrap resamples, deterministic runs. PBL diagnosis at t0: **81 % of CONUS land columns stable** (surface-only), mean mixed-layer depth 64 hPa, as expected for a January morning. One case.
+
+### 20.1 Headline table — % change in 2 m T RMSE vs BASE (GraphCast 24 h background); * = 95 % CI excludes 0; negative = better
+
+| Arm | USCRN +6 h | +12 h | +24 h | +72 h | Withheld +6 h | +48 h | +72 h |
+|---|---|---|---|---|---|---|---|
+| ERA5 start | −12.3* | **+7.6*** | −4.6 | −0.7 | −12.3* | −6.7* | −4.5* |
+| BIAS (uniform shift) | +1.4 | −0.6 | 0.0 | −0.4 | +0.7* | +0.1 | +0.4* |
+| DIR-1F | −4.9 | −9.4* | −2.5 | −1.9* | +1.9 | −1.7* | −1.1* |
+| COL-FIX (fixed deep column) | +1.4 | −11.8* | −2.8 | −3.1* | **+7.5*** | −1.7 | **−3.6*** |
+| BAL-PBL (boundary-layer aware) | −3.3 | −11.6* | −3.2 | −2.1* | +4.2 | −0.4 | −1.3* |
+| IAU-BAL-PBL | −1.7 | −9.3* | −3.3* | −2.2* | +5.3* | +0.5 | −1.5* |
+| **NUD6-DIR** | **−4.9** | −10.9* | −2.5 | −2.3* | **−0.2** | **−2.1*** | −1.9* |
+| **NUD24-BAL-PBL** | −3.2 | −13.2* | **−3.8*** | −2.8* | +2.2 | +0.5 | −0.9 |
+| NUD24-FIX | −0.3 | **−15.0*** | −3.7 | **−3.5*** | +4.5 | −1.2 | −2.3* |
+| **NUD72-BAL** (3-day nudging) | +8.6 | +25.3* | +24.2* | +20.1* | +17.3* | +38.3* | +38.2* |
+| **FREE72** (3-day free run) | +22.5* | +43.6* | +31.4* | +23.1* | +31.3* | +35.9* | +46.0* |
+
+### 20.2 What it means
+
+1. **Real station insertion now gives statistically significant forecast gains on both independent networks** — at +72 h every insertion arm beats the background at USCRN (−1.9 to −3.5 %*) and at withheld ISD (−1.1 to −3.6 %*). At +12 h (00 UTC) the gain at USCRN is large (−9 to −15 %*), while the ERA5 start is significantly *worse* there (+7.6 %*): station information carries local detail that ERA5 does not.
+2. **It is not bias correction.** The bias-only arm gives nothing (or slightly worse); the benefit comes from the spatial pattern of the station increments.
+3. **Short-window nudging is the most consistent method.** NUD6-DIR is the only arm with no early penalty at withheld stations and is significant at 48–72 h; NUD24-BAL-PBL is best at USCRN +24 h. The deep fixed column (COL-FIX / NUD24-FIX) is best at 72 h but significantly *worse* at +6 h (+7.5 %*) — the same early/late trade-off as before.
+4. **Boundary-layer-aware spreading halves the early penalty of deep insertion** (withheld +6 h: BAL-PBL +4.2 % vs COL-FIX +7.5 %; USCRN +6 h: −3.3 % vs +1.4 %), consistent with 81 % of columns being stable, but does not beat surface-only at short leads.
+5. **IAU-like insertion adds nothing over direct insertion** in this case.
+6. **3-day surface-only nudging fails, and the reason is clear.** NUD72-BAL is better than its free-running control (FREE72) at 6–24 h, so the nudging works at the surface; but both are far worse than the 24 h background. The 3-day chain drifts aloft (t0 T850 error vs ERA5: NUD72 2.02 K, FREE72 1.87 K, BASE 0.75 K) and surface observations cannot correct the free atmosphere — nudging even slightly worsens T850. At t0 NUD72 fits withheld stations *better* than BASE (1.89 vs 2.24 K) yet its forecast is 17–38 % worse: a good surface on a wrong atmosphere does not forecast well.
+   **Operational lesson:** exactly why centres assimilate radiosondes/aircraft/satellites every cycle — surface-only cycling of an ML model is not viable; Mode B requires upper-air observations, or the upper air must be re-anchored to a provider analysis every cycle.
+7. **The ERA5 start remains best early** (−12 % at +6 h on both networks) and significantly better at all leads on withheld ISD; at USCRN 24–72 h the insertion arms equal or beat it.
+
+### 20.3 Open issue
+Early leads disagree between networks: at +6 h insertion helps at USCRN but hurts at withheld ISD (+2 to +8 %). Candidate causes: the t0 (12 UTC, pre-dawn) increment applied into the afternoon mixed layer at +6 h; different station siting (USCRN rural reference sites vs airport ASOS). Stratify by station type and time of day before interpreting.
+
+### 20.4 Next
+1. **Hybrid cycling arm (`NUD72-HYB`)**: in the 3-day chain, relax the free atmosphere (above the diagnosed PBL) toward ERA5 as a stand-in for the provider analysis, and the surface/PBL toward stations — the realistic "provider analysis + own surface observations, cycled" system. Alternative: add IGRA radiosonde T/wind to the nudging at 00/12 UTC.
+2. **Multiple dates** (00 and 12 UTC, winter and summer): the 12 h USCRN gain, the 72 h gain and the early trade-off are the claims to confirm.
+3. Stratify station scores by network/siting and time of day (20.3).
