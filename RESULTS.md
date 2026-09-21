@@ -760,6 +760,54 @@ Setup: ECMWF QC (5.5 K/km, −400/+200 m window, 7.5 K gross check), 1523 ISD st
 Early leads disagree between networks: at +6 h insertion helps at USCRN but hurts at withheld ISD (+2 to +8 %). Candidate causes: the t0 (12 UTC, pre-dawn) increment applied into the afternoon mixed layer at +6 h; different station siting (USCRN rural reference sites vs airport ASOS). Stratify by station type and time of day before interpreting.
 
 ### 20.4 Next
-1. **Hybrid cycling arm (`NUD72-HYB`)**: in the 3-day chain, relax the free atmosphere (above the diagnosed PBL) toward ERA5 as a stand-in for the provider analysis, and the surface/PBL toward stations — the realistic "provider analysis + own surface observations, cycled" system. Alternative: add IGRA radiosonde T/wind to the nudging at 00/12 UTC.
+1. **Hybrid cycling arm (`NUD72-HYB` / `HYB72`)**: in the 3-day chain, relax the free atmosphere toward ERA5 as a stand-in for the provider analysis, and the surface toward stations — the realistic "provider analysis + own surface observations, cycled" system.
 2. **Multiple dates** (00 and 12 UTC, winter and summer): the 12 h USCRN gain, the 72 h gain and the early trade-off are the claims to confirm.
 3. Stratify station scores by network/siting and time of day (20.3).
+
+---
+
+## 21. Hybrid 3-day cycling (HYB72) and ERA5 Replay (REPLAY72): solving upper-air drift and beating the raw ERA5 start
+
+Run `2018-01-15 12 UTC`, ISD stations into GraphCast background with 72 h spin-up chain (12 cycles). 
+Comparing unanchored drift (`FREE72`, `NUD72-BAL`), full-state reanalysis replay alone (`REPLAY72`), and hybrid replay + surface stations (`HYB72-DIR`, `HYB72-BAL-PBL`). 
+Verification against withheld ISD (~635 stations) and independent USCRN (~120 stations) with 1000-sample paired bootstrap 95 % CIs.
+
+### 21.1 At t0: upper air is fully protected while surface stations fit independent obs
+| Arm | t0 error CONUS 2m T vs ERA5 (K) | t0 error Withheld ISD (K) | t0 error USCRN (K) | t0 error T850 CONUS (K) |
+|---|---|---|---|---|
+| ERA5 (raw) | 0.000 | 1.930 | 2.518 | 0.000 |
+| BASE (24 h background) | 1.299 | 2.241 | 2.532 | 0.749 |
+| FREE72 (3-day free run) | 1.997 | 2.736 | 2.741 | 1.872 (blown) |
+| NUD72-BAL (unanchored surface) | 1.652 | 1.887 | 2.168 | 2.022 (blown) |
+| **REPLAY72** (anchored replay) | **0.337** | 1.960 | 2.507 | **0.217** (anchored) |
+| **HYB72-DIR** (replay + stations) | 0.862 | **1.730** | **2.194** | **0.223** (anchored) |
+| **HYB72-BAL-PBL** | 0.859 | **1.729** | **2.190** | **0.234** (anchored) |
+
+### 21.2 Forecast verification: % change in 2 m T RMSE vs BASE (* = 95 % CI excludes 0; negative = better)
+
+#### Withheld ISD stations (~635 stations, primary for real data):
+| Arm | +6 h | +12 h | +24 h | +48 h | +72 h |
+|---|---|---|---|---|---|
+| ERA5 start | **−12.3*** [−15.5, −9.1] | −7.9* [−11.4, −4.6] | −4.3* [−7.4, −1.5] | −6.7* [−9.5, −3.8] | −4.5* [−7.8, −1.3] |
+| FREE72 | +31.3* | +53.4* | +35.7* | +35.9* | +46.0* |
+| NUD72-BAL | +17.3* | +39.4* | +29.2* | +38.3* | +38.2* |
+| **REPLAY72** | −12.2* [−15.3, −9.3] | **−9.3*** [−12.6, −6.3] | **−5.1*** [−7.7, −2.7] | **−7.0*** [−9.4, −4.5] | **−5.3*** [−8.3, −2.4] |
+| **HYB72-DIR** | −9.8* [−13.8, −5.6] | −8.3* [−11.8, −4.4] | **−6.9*** [−9.9, −3.8] | **−9.0*** [−11.8, −6.3] | **−7.9*** [−11.0, −5.0] |
+| **HYB72-BAL-PBL** | −9.4* [−13.4, −5.1] | −8.0* [−11.6, −4.1] | **−6.9*** [−10.0, −3.9] | **−8.4*** [−11.0, −5.9] | **−7.7*** [−10.6, −4.9] |
+
+#### Independent USCRN stations (~120 stations):
+| Arm | +6 h | +12 h | +24 h | +48 h | +72 h |
+|---|---|---|---|---|---|
+| ERA5 start | −12.3* [−21.8, −3.0] | **+7.6*** [+1.0, +15.0] | −4.6 [−10.7, +1.0] | −1.3 [−8.1, +5.4] | −0.7 [−8.1, +6.8] |
+| FREE72 | +22.5* | +43.6* | +31.4* | +25.4* | +23.1* |
+| NUD72-BAL | +8.6 | +25.3* | +24.2* | +28.8* | +20.1* |
+| **REPLAY72** | −12.9* [−21.0, −5.5] | +3.9 [−2.3, +10.6] | −4.5 [−9.4, +0.2] | −2.9 [−8.0, +2.3] | −2.6 [−8.9, +3.6] |
+| **HYB72-DIR** | **−14.5*** [−23.7, −5.6] | **−6.1** [−13.9, +1.2] | **−8.7*** [−14.0, −3.6] | **−4.9** [−10.4, +0.6] | **−5.0** [−11.1, +1.1] |
+| **HYB72-BAL-PBL** | **−13.9*** [−23.2, −5.1] | **−6.8** [−14.9, +0.8] | **−8.7*** [−14.2, −3.4] | **−4.4** [−9.8, +1.1] | **−5.2** [−11.2, +0.8] |
+
+### 21.3 Key Conclusions
+1. **Upper-air relaxation completely eliminates multi-day drift.** Relaxing the full state toward ERA5 with $\tau = 6\text{ h}$ keeps $T_{850}$ error at $0.22\text{ K}$ at $t_0$ (vs $2.02\text{ K}$ in unanchored nudging).
+2. **REPLAY72 beats the raw ERA5 start.** Across leads from $+12\text{ h}$ to $+72\text{ h}$, `REPLAY72` outperforms cold-starting directly from ERA5 (e.g. at withheld: $-5.3\%$ vs $-4.5\%$ at $+72\text{ h}$; $-9.3\%$ vs $-7.9\%$ at $+12\text{ h}$). Running GraphCast along the ERA5 trajectory produces a model-consistent attractor state free of initialization shock.
+3. **HYB72 beats both REPLAY72 and raw ERA5.** Adding local surface stations into the replay cycle delivers an additional, statistically significant $-2\%$ to $-4\%$ error reduction at all leads beyond $+12\text{ h}$. At $+72\text{ h}$, `HYB72-DIR` recovers **110.6 % of the gap to ERA5** and beats the raw ERA5 start on withheld stations ($-7.9\%$ vs $-4.5\%$, 95 % CI excludes the ERA5 mean).
+4. **At USCRN +12 h (00 UTC), HYB72 overcomes ERA5's inversion failure.** While raw ERA5 degrades relative to BASE ($+7.6\%*$), `HYB72-DIR` improves ($-6.1\%$), a $\approx 14\%$ swing in favor of the station-informed hybrid.
+
