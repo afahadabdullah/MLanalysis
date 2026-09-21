@@ -98,13 +98,24 @@ Organizations run pretrained, ERA5-trained ML weather models from a gridded anal
 4. **Time matching:** use observations within ±30 min of the analysis time (00/06/12/18 UTC).
 5. **Station split per start date:** 80 % inserted, 20 % withheld. USCRN is always excluded from insertion.
 
-### 5.2 Insertion methods (the same super-observations for every method)
-| ID suffix | Method | Details |
+### 5.2 Insertion methods & 4D Balance (Spatial & Temporal Tiers)
+
+To evaluate whether retention and forecast improvement stem from **vertical depth**, **spatial hydrostatic balance**, or **temporal tendency balance** (analogous to Incremental Analysis Updates in NWP), the insertion operators are organized into a $3 \times 2$ factorial structure:
+
+#### Spatial Tiers:
+| ID | Spatial Method | Details |
 |---|---|---|
-| **-DIR** | Direct | Univariate OI on the `2t` channel over CONUS land cells: Gaussian horizontal correlation (L ≈ 150 km at 1°, tuned on 2018), obs/background error ratio from 2018 departure statistics. No other channel changes |
-| **-BAL** | Balanced increment | The -DIR `2t` increment ΔT₂ₘ is spread into `t` at 1000/925/850 hPa with weights (1.0, 0.6, 0.2) × ΔT₂ₘ, only at levels above ground. `z` is updated at all levels by hypsometric integration. Test weights on 2018 separately for 00 and 12 UTC (stable morning vs. mixed afternoon boundary layers) |
-| **-NUD** | Nudged | Start from the base analysis at t0−24 h. At each 6 h cycle, form that cycle's -DIR adjusted state (mesonet obs at that time) and update `x = F(x) + α_k·(X_k − F(x))` on all channels, with the tapered gain (α_k → 0 at the last update). Other regions and channels therefore relax to the base analysis. The launch pair is the model's own states |
-| **-SMO** | Smoothing control | The base analysis with a 2t/t spectral filter matched to the -NUD t0 spectrum over CONUS |
+| **-DIR** | Direct Surface | Univariate update of `2t` only over CONUS. No upper-air temperature or geopotential changes |
+| **-COL** | Column Thermal | `2t` increment plus column warming at 1000/925/850 hPa with weights (1.0, 0.6, 0.2) × ΔT₂ₘ. **No geopotential update** (isolates pure heat depth from balance) |
+| **-BAL** | Balanced Column | Column thermal update (**-COL**) **plus** hypsometric geopotential update ($z$) across all layers above ground ($\Delta\Phi = R_d \ln(p_1/p_2) \overline{\Delta T_v}$) |
+| **-NUD** | Nudged (Model-Consistent) | Start from base analysis at $t_0 - 24\text{ h}$. At each 6h cycle, update $x = \mathcal{M}(x) + \alpha_k (X_k - \mathcal{M}(x))$. Launch pair is the model's own relaxed states |
+| **-SMO** | Smoothing control | Base analysis with a spectral filter matched to the -NUD $t_0$ spectrum over CONUS |
+
+#### Temporal Tiers (NASA GMAO GEOS IAU Framework):
+In NASA GMAO GEOS DA (Bloom et al. 1996; Takacs et al. 2018), Incremental Analysis Updates (IAU) distribute increments continuously across a time window rather than injecting an abrupt impulse jump, preventing high-frequency gravity-wave ringing. In GraphCast (which infers tendencies across its two input frames $t-6\text{h}$ and $t_0$):
+* **-IMP (Impulse Injection):** Increment applied strictly at $t_0$. Implied artificial tendency: $\partial \Delta X / \partial t = \Delta X / 6\text{ h} \approx +0.33\text{ K/h}$.
+* **-IAU (Tendency-Neutral Window):** Increment applied at **both** $t-6\text{h}$ and $t_0$. Implied artificial tendency: $\partial \Delta X / \partial t = 0\text{ K/h}$. The model receives the increment as an established, dynamically steady air mass.
+* **-RAMP (Ramped IAU):** $0.5 \Delta X$ at $t-6\text{h}$, $1.0 \Delta X$ at $t_0$.
 
 - **Nudging parameters:** α = 1 − exp(−6h/τ). Tune on 2018 with τ ∈ {6, 12, 24 h} and W ∈ {12, 24 h}. Freeze before evaluating.
 - **Fairness:** -NUD uses observations from several cycles, while -DIR/-BAL use only t0−6 h and t0. Control: a W = 12 h -NUD run uses only those same two times.

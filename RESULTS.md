@@ -313,3 +313,60 @@ The same runs can be read as **information propagation** rather than error corre
 Taken that way, the results so far already say something: **a surface-only insertion has an information half-life of roughly a day, while a column insertion is still ~84 % intact at 24 h**, and a surface temperature increment converts into lower-tropospheric temperature, MSLP and wind responses within one step.
 
 This is developed as **Exp 0b** in `PROJECT_PLAN_LEAN.md` (impulse-response / Green's function characterization: depth, balance, variable, scale, amplitude, regime; metrics of half-life, propagation speed, spread, vertical and cross-variable transfer, and linearity). Note the limit: persistence is not accuracy. Exp 0b ranks how well information survives; the twin experiment ranks whether it improves the forecast. Both are needed to answer "what is the best way to insert new data".
+
+---
+
+## 11. Real-Case Benchmark: Winter 2018 Case Date (2018-01-15 12:00 UTC)
+
+**Run:** `scripts/test_balanced_insertion.py`, NCCS Prism `gpu004`, GraphCast_small on real ERA5 dataset fetched via Google Cloud WeatherBench 2 (`source-era5_date-2018-01-15_res-1.0_levels-13_steps-04.nc`). Anomaly: $\Delta T_{2m} = +2.0\text{ K}$ over CONUS ($38^\circ\text{N}, 95^\circ\text{W}$, $\sigma = 4^\circ \times 6^\circ$).
+
+### 11.1 Comparative Retention: `E-DIR` vs. `E-BAL`
+
+| Lead Time | `E-DIR` Projection Retention | `E-BAL` Projection Retention | `E-DIR` Peak Amplitude | `E-BAL` Peak Amplitude |
+| :---: | :---: | :---: | :---: | :---: |
+| **+06 h** | **50.5 %** | **93.8 %** | 67.3 % | 114.2 % |
+| **+12 h** | **52.6 %** | **104.5 %** | 75.1 % | 126.8 % |
+| **+18 h** | **53.3 %** | **100.1 %** | 73.2 % | 125.1 % |
+| **+24 h** | **53.6 %** | **93.6 %** | 79.1 % | 128.4 % |
+
+### 11.2 Key Physical Insights from the 2018 Winter Case
+1. **The Depth-Governed Retention Mechanism is Fully Confirmed on Real Data:**
+   In an active winter synoptic setting with real baroclinic shear and nocturnal stability, surface-only insertion (`E-DIR`) loses **half its retention within the first 6 hours** ($50.5\%$) and remains damped near $\sim 53\%$ through Day 1.
+2. **Balanced Column Insertion Sustains Full Magnitude ($93.6\%\text{–}104.5\%$):**
+   By coupling boundary-layer column warming ($1000, 925, 850\text{ hPa}$) with hypsometrically balanced geopotential ridge thickness, `E-BAL` maintains over $93\%$ projection retention and preserves full peak amplitude through 24 hours.
+3. **The Peak Amplitude Overshoot ($\sim 128\%$):**
+   `E-BAL` peak amplitude climbs above $100\%$ starting at $+06\text{h}$. This diagnostic signature confirms the hypothesis from Section 8 (Issue 2): **an impulse insertion at $t_0$ alone implies an artificial $+2\text{ K} / 6\text{h}$ warming tendency**, which the neural network extrapolates forward in time. This motivates Section 12: temporal balancing via NASA GMAO GEOS IAU.
+
+---
+
+## 12. Experiment 2b: 4D Balance & NASA GMAO GEOS IAU Temporal Windowing
+
+**Script:** `scripts/test_iau_experiments.py`  
+**Location:** Runs on NCCS Prism `gpu004`. Outputs in `runs/iau/`.
+
+### 12.1 Dynamical Motivation: From Spatial Balance to 4D Assimilation
+In NASA GMAO GEOS atmospheric modeling (Bloom et al. 1996; Takacs et al. 2018 for 4D-IAU in MERRA-2 and FP), inserting analysis increments as an impulsive state replacement excites spurious high-frequency gravity-wave ringing. The GEOS Data Assimilation System resolves this via **Incremental Analysis Updates (IAU)**: the increment $\Delta\mathbf{x}$ is introduced as a continuous state-independent tendency forcing across an assimilation window $\tau$:
+$$\frac{\partial \mathbf{x}}{\partial t} = \mathcal{M}(\mathbf{x}) + w(t) \frac{\Delta \mathbf{x}}{\tau}$$
+Because GraphCast takes two consecutive frames ($t_{-1} = t_0 - 6\text{h}$ and $t_0$) to calculate finite-difference temporal derivatives, an increment applied strictly at $t_0$ creates an artificial, unphysical tendency jump:
+$$\left(\frac{\partial T}{\partial t}\right)_{\text{implied}} = \frac{\Delta T}{6\text{ h}} \approx +0.33\text{ K/h}$$
+Applying the increment across both input frames ($t-6\text{h}$ and $t_0$) neutralizes this artificial tendency ($\partial \Delta X / \partial t = 0$), presenting the anomaly as an established, dynamically steady air mass.
+
+### 12.2 The $3 \times 2$ Factorial Matrix
+To cleanly disentangle **Vertical Depth**, **Spatial Balance**, and **Temporal Tendency Balance**, 6 parallel arms are evaluated on the 2018 winter benchmark:
+
+| Arm Name | Spatial Tier | Temporal Tier | What It Isolates |
+| :--- | :--- | :--- | :--- |
+| **`DIR-IMP`** | Surface only ($2\text{m } T$) | Impulse ($t_0$ only) | Baseline un-balanced impulse shock |
+| **`DIR-IAU`** | Surface only ($2\text{m } T$) | IAU Window ($t-6\text{h}$ & $t_0$) | **Pure Temporal IAU Effect** on surface data |
+| **`COL-IMP`** | Column $T$ ($1000\text{–}850$), no $Z$ | Impulse ($t_0$ only) | **Pure Vertical Depth Effect** (no geopotential) |
+| **`COL-IAU`** | Column $T$ ($1000\text{–}850$), no $Z$ | IAU Window ($t-6\text{h}$ & $t_0$) | Depth + Temporal Tendency Neutralization |
+| **`BAL-IMP`** | Column $T$ + Hypsometric $Z$ | Impulse ($t_0$ only) | **Pure Spatial Hydrostatic Balance Effect** |
+| **`BAL-IAU`** | Column $T$ + Hypsometric $Z$ | IAU Window ($t-6\text{h}$ & $t_0$) | **Full 4D Balance (Spatial Consistency + Temporal IAU)** |
+
+### 12.3 Primary Diagnostic Endpoints
+1. **Area-Weighted Projection Retention $R(t)$:**
+   $$R(t) = \frac{\langle F_{\text{pert}}(t) - F_{\text{base}}(t),\, \Delta X \rangle}{\|\Delta X\|^2}$$
+2. **Peak Amplitude Preservation $P(t)$:** Tracks whether temporal IAU eliminates the $>125\%$ artificial overshoot.
+3. **First-Step Dynamic Shock Jump $\|F(x_0) - x_0\|$:** Directly quantifies initialization shock reduction.
+4. **CONUS Area-Weighted RMSE vs. Baseline:** Evaluates spatial dispersion and downstream stability.
+
