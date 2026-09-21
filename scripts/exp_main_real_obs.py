@@ -117,10 +117,11 @@ ap.add_argument("--withheld-frac", type=float, default=0.3)
 ap.add_argument("--obs-noise", type=float, default=None, help="Obs error std (K); default by source")
 ap.add_argument("--oi-L", type=float, default=250.0, help="OI Gaussian length scale (km)")
 ap.add_argument("--col-top", type=int, default=500, help="Top level (hPa) of column increments")
-ap.add_argument("--nud-types", default="DIR,BAL", help="Increment types used by nudging arms")
+ap.add_argument("--nud-types", default="DIR,BAL,FIX", help="Increment types used by nudging arms (DIR, BAL, FIX, REG)")
+ap.add_argument("--nud-windows", default="6,24", help="Nudging window(s) in hours, comma-separated (e.g. '6', '24', or '6,24')")
 ap.add_argument("--nud-tau", type=float, default=6.0, help="Nudging relaxation time (h)")
 ap.add_argument("--nud-obs", default="all", choices=["all", "last2"],
-                help="Nudge with obs at all 4 cycles (t0-18..t0) or only t0-6h,t0")
+                help="Nudge with obs at all cycles or only last 2")
 ap.add_argument("--seed", type=int, default=42)
 ap.add_argument("--proj", default=os.environ.get("PROJ", "/home/afahad/project/MLanalysis"))
 ap.add_argument("--outdir", default=None)
@@ -551,7 +552,7 @@ def apply_increment(frame, inc2t, kind, scale=1.0):
     f = copy_frame(frame)
     inc = scale * inc2t
     f["2m_temperature"] += inc
-    if kind in ("COL-FIX", "BAL-FIX"):
+    if kind in ("COL-FIX", "BAL-FIX", "FIX"):
         dT = {p: w * inc for p, w in FIXW.items() if p in LIDX}
         for p, v in dT.items():
             f["temperature"][LIDX[p]] += v
@@ -590,33 +591,67 @@ ALPHA = 1.0 - np.exp(-6.0 / args.nud_tau)
 nud_times = OBS_IDX if args.nud_obs == "all" else [I0 - 1, I0]
 
 
-def nudge_chain(kind, alpha):
-    A, B = era5_frame(S0), era5_frame(S0 + 1)
-    for idx in OBS_IDX:                                  # targets t0-18, -12, -6, t0
-        C = pred_frame(forecast(A, B, idx - 2, 1), 0)
-        if alpha > 0 and idx in nud_times:
-            C = apply_increment(C, oi_increment(C["2m_temperature"], idx, f"nud-{kind}"), kind, scale=alpha)
-        A, B = B, C
-    return A, B
+def nudge_chain(kind, alpha, window_h=24):
+    if window_h == 6:
+        # 6 h window: 1 step (t0-6h -> t0) with model dynamic adjustment
+        if args.base == "bg":
+            A = copy_frame(BG_CHAIN[I0 - 2])
+            B = copy_frame(BG_CHAIN[I0 - 1])
+        else:
+            A = copy_frame(era5_frame(I0 - 2))
+            B = copy_frame(era5_frame(I0 - 1))
+        if alpha > 0:
+            B = apply_increment(B, oi_increment(B["2m_temperature"], I0 - 1, f"nud6-{kind}"), kind, scale=alpha)
+        C = pred_frame(forecast(A, B, I0 - 2, 1), 0)
+        if alpha > 0:
+            C = apply_increment(C, oi_increment(C["2m_temperature"], I0, f"nud6-{kind}"), kind, scale=alpha)
+        return B, C
+    elif window_h == 12:
+        # 12 h window: 2 steps (t0-12h -> t0-6h -> t0)
+        if args.base == "bg":
+            A, B = copy_frame(BG_CHAIN[I0 - 3]), copy_frame(BG_CHAIN[I0 - 2])
+        else:
+            A, B = copy_frame(era5_frame(I0 - 3)), copy_frame(era5_frame(I0 - 2))
+        for idx in [I0 - 1, I0]:
+            C = pred_frame(forecast(A, B, idx - 2, 1), 0)
+            if alpha > 0:
+                C = apply_increment(C, oi_increment(C["2m_temperature"], idx, f"nud12-{kind}"), kind, scale=alpha)
+            A, B = B, C
+        return A, B
+    elif window_h == 24:
+        # 24 h window: 4 cycles (t0-18h, t0-12h, t0-6h, t0) from t0-30h/t0-24h
+        A, B = era5_frame(S0), era5_frame(S0 + 1)
+        for idx in OBS_IDX:
+            C = pred_frame(forecast(A, B, idx - 2, 1), 0)
+            if alpha > 0 and idx in nud_times:
+                C = apply_increment(C, oi_increment(C["2m_temperature"], idx, f"nud24-{kind}"), kind, scale=alpha)
+            A, B = B, C
+        return A, B
+    else:
+        raise ValueError(f"Unsupported nudging window: {window_h}h (supported: 6, 12, 24)")
 
 
-for k in [x.strip() for x in args.nud_types.split(",") if x.strip()]:
-    t_ = time.time()
-    ARMS[f"NUD-{k}"] = nudge_chain(k, ALPHA)
-    print(f"   NUD-{k}: alpha={ALPHA:.2f} (tau={args.nud_tau} h), obs={args.nud_obs}, {time.time()-t_:.1f} s")
+WINDOWS = [int(w.strip()) for w in args.nud_windows.split(",") if w.strip()]
+for w in WINDOWS:
+    for k in [x.strip() for x in args.nud_types.split(",") if x.strip()]:
+        t_ = time.time()
+        arm_key = f"NUD{w}-{k}" if (len(WINDOWS) > 1 or w != 24) else f"NUD-{k}"
+        ARMS[arm_key] = nudge_chain(k, ALPHA, window_h=w)
+        print(f"   {arm_key}: window={w}h, alpha={ALPHA:.2f} (tau={args.nud_tau} h), obs={args.nud_obs}, {time.time()-t_:.1f} s")
 
 CHECKS = {}
 if not args.skip_checks:
     print("\n[7] Consistency checks ...")
-    A0, B0 = nudge_chain("DIR", 0.0)
+    chk_w = WINDOWS[0] if WINDOWS else 24
+    A0, B0 = nudge_chain("DIR", 0.0, window_h=chk_w)
     dd = B0["2m_temperature"] - BG_B["2m_temperature"]
     CHECKS["stepwise_vs_rollout_max_2t_K"] = float(np.abs(dd).max())
-    CHECKS["stepwise_vs_rollout_conus_rms_2t_K"] = wrms(dd, CONUS)
+    CHECKS["stepwise_vs_rollout_conus_rms_2t_K"] = wrms(dd, CONUS_LAND)
     p1 = forecast(TRUE_A, TRUE_B, I0 - 1, 2)
     p2 = forecast(TRUE_A, TRUE_B, I0 - 1, 2)
     dd = pred_frame(p1, 1)["2m_temperature"] - pred_frame(p2, 1)["2m_temperature"]
     CHECKS["rerun_max_2t_K"] = float(np.abs(dd).max())
-    CHECKS["rerun_conus_rms_2t_K"] = wrms(dd, CONUS)
+    CHECKS["rerun_conus_rms_2t_K"] = wrms(dd, CONUS_LAND)
     CHECKS["xla_flags"] = os.environ.get("XLA_FLAGS", "")
     for k, v in CHECKS.items():
         print(f"   {k}: {v:.3e}" if isinstance(v, float) else f"   {k}: {v}")
@@ -717,11 +752,17 @@ for name in ARMS:
 # =============================================================================
 print("\n[9] Plotting ...")
 ORDER = ["ERA5", "BASE", "DIR-1F", "DIR-2F", "COL-2F", "BAL-2F", "REG-2F", "COL-FIX", "BAL-FIX"] + \
-        [a for a in ARMS if a.startswith("NUD-")]
+        [a for a in ARMS if a.startswith("NUD")]
+for a in ARMS:
+    if a not in ORDER:
+        ORDER.append(a)
 ORDER = [a for a in ORDER if a in ARMS]
 COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d62728",
        "COL-2F": "#ff7f0e", "BAL-2F": "#1f77b4", "REG-2F": "#17becf", "COL-FIX": "#ffbb78", "BAL-FIX": "#9467bd",
-       "NUD-DIR": "#e377c2", "NUD-COL": "#bcbd22", "NUD-BAL": "#2ca02c", "NUD-REG": "#8c564b"}
+       "NUD-DIR": "#e377c2", "NUD-COL": "#bcbd22", "NUD-BAL": "#2ca02c", "NUD-REG": "#8c564b", "NUD-FIX": "#17becf",
+       "NUD6-DIR": "#f781bf", "NUD6-BAL": "#4daf4a", "NUD6-FIX": "#377eb8",
+       "NUD12-DIR": "#e41a1c", "NUD12-BAL": "#984ea3", "NUD12-FIX": "#ff7f00",
+       "NUD24-DIR": "#e377c2", "NUD24-BAL": "#2ca02c", "NUD24-FIX": "#9467bd"}
 STY = {"ERA5": "--", "BASE": "--"}
 EXT = [230, 300, 20, 55]
 
@@ -851,7 +892,7 @@ for ax, (m, ttl) in zip(axs, metrics):
 savefig(fig, "fig6_t0_consistency.png")
 
 # (7) day-1 and day-3 error maps
-show = [a for a in ["BASE", "DIR-2F", "BAL-2F", "NUD-BAL", "ERA5"] if a in ARMS]
+show = [a for a in ["BASE", "DIR-2F", "COL-FIX", "NUD6-BAL", "NUD24-BAL", "NUD-BAL", "ERA5"] if a in ARMS]
 leads_show = [k for k in (3, 11) if k < args.steps]
 fig = plt.figure(figsize=(4.2 * len(show), 3.6 * len(leads_show)))
 for r, k in enumerate(leads_show):
