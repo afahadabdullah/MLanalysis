@@ -686,3 +686,39 @@ Errors against stations drop from t0 (12 UTC, pre-dawn inversion) to +6 h (18 UT
 1. Pull the updated script and rerun `isd/bg` and `era5-synth/bg` (CONUS-land scoring, terrain-filtered verification, withheld scores in the twin).
 2. **Multi-date runs** (10 dates: 00 and 12 UTC, winter and summer) to test the lead-dependent ranking and the NUD-BAL result. Single-case differences of 1 % are not yet a conclusion.
 3. To test *why* the t0 gain is lost: nudge more times (NUD with obs at every 6 h for 48 h), and add a hybrid arm (nudging + fixed column) to see whether depth and repetition together keep the station information past 6 h.
+
+---
+
+## 19. Real ISD stations inserted into ERA5 itself (`isd/era5`, 2018-01-15 12 UTC)
+
+Question: can real surface stations improve a forecast started from the model's own training analysis? Verification against **USCRN** (independent, 127 stations, not terrain-filtered in this run). Deterministic run; single case.
+
+### 19.1 USCRN 2 m T RMSE (K) and change vs the ERA5 start
+
+| Arm | +6 h | +24 h | +48 h | +72 h |
+|---|---|---|---|---|
+| ERA5 (= BASE) | 1.902 | 3.004 | 3.511 | 3.911 |
+| DIR-1F (surface, t0) | **1.889 (−0.7 %)** | 2.928 (−2.5 %) | 3.478 (−0.9 %) | 3.841 (−1.8 %) |
+| DIR-2F (surface, both frames) | 1.934 (+1.7 %) | **2.920 (−2.8 %)** | 3.480 (−0.9 %) | **3.834 (−2.0 %)** |
+| COL-2F / REG-2F (regressed column) | 1.96–1.97 (+3 %) | 2.93 (−2.4 %) | 3.48 (−0.8 %) | 3.85 (−1.6 %) |
+| BAL-2F | 1.971 (+3.6 %) | 2.935 (−2.3 %) | 3.476 (−1.0 %) | 3.841 (−1.8 %) |
+| COL-FIX (1.0/0.6/0.2) | 2.010 (+5.7 %) | 2.948 (−1.9 %) | 3.497 (−0.4 %) | 3.841 (−1.8 %) |
+| BAL-FIX | 2.051 (+7.8 %) | 2.966 (−1.3 %) | 3.516 (+0.1 %) | 3.870 (−1.0 %) |
+
+### 19.2 What it means
+
+1. **Real stations improved on the ERA5 start at independent stations from 24 h to 72 h** in every arm (−1 to −3 %, 0.04–0.08 K). This is the first sign that information *beyond the training analysis* survives in a frozen ERA5-trained model. It is small, one case, and needs a significance test (19.4).
+2. **At +6 h only surface-only, t0-only insertion helps (−0.7 %); anything deeper hurts, the deeper the worse** (COL-FIX +5.7 %, BAL-FIX +7.8 %). The innovations explain why: the mean observation-minus-ERA5 departure is **−0.63 to −0.79 K** (stations colder than ERA5 at 06 and 12 UTC), i.e. mostly ERA5's warm bias in the shallow nocturnal winter inversion. Spreading a night-time surface cold correction up to 850 hPa is physically wrong, and it shows up as error once the afternoon boundary layer mixes (+6 h = 18 UTC). This is exactly why RAP/HRRR only extend surface innovations through the boundary layer (to 75 % of PBL top) and why the depth must be regime-dependent.
+3. **Surface-only insertion is best overall on ERA5** (DIR-2F best at 24 and 72 h, DIR-1F best at 6 h). Adding depth or Z does not help when the error being corrected is a shallow surface-layer bias.
+4. **The regression was estimated from the GraphCast background's errors** and then applied to an ERA5 base, whose errors differ. For `--base era5` the column arms are therefore not well posed; read them as sensitivity tests.
+
+### 19.3 Combined reading with §18 (base = GraphCast background)
+- Both bases: real stations help at independent stations beyond 12–24 h, by a few per cent.
+- Both bases: deep column insertion hurts early in this stable-morning case and only helps (slightly) at long leads.
+- The best method depends on the error being corrected: shallow surface bias (ERA5 base) → surface-only; a broader background error (GraphCast base) → nudging at 24–48 h.
+
+### 19.4 Needed before claiming anything
+1. **Paired significance over stations:** bootstrap USCRN stations (and time-of-day blocks) for each arm-minus-BASE difference; 0.05 K on 127 stations may not be significant.
+2. **Bias-only control arm:** subtract the domain-mean innovation (≈ −0.7 K) uniformly from 2 m T. If it matches DIR, the gain is bias correction, not spatial information.
+3. **Boundary-layer-dependent depth (`COL-PBL`)**, RAP-style: extend the increment only through the diagnosed boundary layer. Tests point 2 directly.
+4. **Multiple dates including 00 UTC and summer**, where the boundary layer is deep and column insertion should behave differently.

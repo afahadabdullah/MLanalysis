@@ -28,7 +28,8 @@ VERIFICATION
   "Gap closed" = (E_BASE - E_arm)/(E_BASE - E_ERA5); >100 % vs stations means the
   arm beat the forecast started from ERA5.
 
-ARMS  ERA5 | BASE | DIR-1F | DIR-2F | COL-2F | BAL-2F | REG-2F | NUD-<type>
+ARMS  ERA5 | BASE | BIAS | DIR-1F | DIR-2F | COL-2F | BAL-2F | REG-2F | COL/BAL-FIX | COL/BAL-PBL |
+      IAU-<type> | NUD<window>-<type>   (see OPERATIONAL_DA_PLAN.md: M0-M5)
   DIR = 2 m T only; COL = + column T from a regression of background error profiles
   on the 2 m error (training region outside CONUS); BAL = COL + hypsometric Z;
   REG = COL + regressed Z; 1F/2F = insert at t0 only / at t0-6h and t0;
@@ -104,11 +105,22 @@ ap.add_argument("--obs-file", default=None, help="Station CSV (sid,lat,lon,elev,
 ap.add_argument("--verify-file", default=None, help="USCRN CSV for independent verification")
 ap.add_argument("--merra2-dir", default=None, help="Directory with MERRA2_*.inst1_2d_asm_Nx.*.nc4")
 ap.add_argument("--superob", type=int, default=1, help="Average stations within a 1-deg cell (1/0)")
-ap.add_argument("--max-dz", type=float, default=600.0, help="Reject stations |elev - model orog| > this (m)")
+ap.add_argument("--max-dz", type=float, default=None, help="(deprecated; use --dz-below/--dz-above)")
+ap.add_argument("--dz-below", type=float, default=400.0, help="Keep stations up to this far BELOW model orography (m) [ECMWF]")
+ap.add_argument("--dz-above", type=float, default=200.0, help="Keep stations up to this far ABOVE model orography (m) [ECMWF]")
+ap.add_argument("--gross", type=float, default=7.5, help="Reject |obs - background| > this (K) [ECMWF]")
+ap.add_argument("--bgcheck", type=float, default=4.0, help="Reject |innovation| > bgcheck*sqrt(sb2+so2)")
+ap.add_argument("--sigma-inst", type=float, default=0.5, help="Station instrument error (K)")
+ap.add_argument("--sigma-repr", type=float, default=1.0, help="Station representativeness error vs 1-deg cell (K)")
+ap.add_argument("--pbl-dtheta", type=float, default=1.5, help="PBL top: first level with theta > theta_2m + this (K)")
+ap.add_argument("--pbl-frac", type=float, default=0.75, help="Spread increments up to this fraction of PBL depth [RAP]")
+ap.add_argument("--iau-kinds", default="DIR,BAL-PBL", help="Increment types for IAU-like arms (base bg only)")
+ap.add_argument("--arms", default="all", help="Comma list of arms to forecast (ERA5 and BASE always kept)")
+ap.add_argument("--boot", type=int, default=1000, help="Bootstrap resamples over stations")
 ap.add_argument("--allow-no-elev", action="store_true", help="Keep stations with unknown elevation (no height correction)")
-ap.add_argument("--lapse", type=float, default=6.5, help="Lapse rate for station height correction (K/km)")
-ap.add_argument("--verify-max-dz", type=float, default=150.0,
-                help="Verification stations only where |station elev - model orog| < this (m); limits lapse-rate error")
+ap.add_argument("--lapse", type=float, default=5.5, help="Lapse rate for station height correction (K/km) [ECMWF 5.5]")
+ap.add_argument("--verify-max-dz", type=float, default=None,
+                help="Optional extra symmetric |dz| cap for verification stations (m); default: same ECMWF window")
 ap.add_argument("--regress-region", default="conus-past", choices=["conus-past", "outside"],
                 help="conus-past: CONUS land background errors at t0-18h/t0-12h; outside: NH land outside CONUS at t0-6h/t0")
 ap.add_argument("--fix-weights", default="1.0,0.6,0.2", help="Fixed column weights at 1000,925,850 hPa for COL-FIX/BAL-FIX")
@@ -117,7 +129,7 @@ ap.add_argument("--withheld-frac", type=float, default=0.3)
 ap.add_argument("--obs-noise", type=float, default=None, help="Obs error std (K); default by source")
 ap.add_argument("--oi-L", type=float, default=250.0, help="OI Gaussian length scale (km)")
 ap.add_argument("--col-top", type=int, default=500, help="Top level (hPa) of column increments")
-ap.add_argument("--nud-types", default="DIR,BAL,FIX", help="Increment types used by nudging arms (DIR, BAL, FIX, REG)")
+ap.add_argument("--nud-types", default="DIR,BAL-PBL,FIX", help="Increment types used by nudging arms (DIR, BAL, FIX, REG, PBL, BAL-PBL)")
 ap.add_argument("--nud-windows", default="6,24", help="Nudging window(s) in hours, comma-separated (e.g. '6', '24', or '6,24')")
 ap.add_argument("--nud-tau", type=float, default=6.0, help="Nudging relaxation time (h)")
 ap.add_argument("--nud-obs", default="all", choices=["all", "last2"],
@@ -137,11 +149,20 @@ DATA = args.data or os.path.join(
     f"source-era5_date-{t_launch:%Y-%m-%d}_res-1.0_levels-13_steps-16.nc")
 TAG = dt.datetime.fromisoformat(args.t0).strftime("%Y%m%dT%H")
 OUT = args.outdir or os.path.join(PROJ, "runs", "exp_main", f"{TAG}_{args.obs_source}_{args.base}")
-if args.base == "era5" and args.nud_types:
-    print("NOTE: nudging arms need --base bg; disabled for --base era5")
-    args.nud_types = ""
-SIGMA_O = args.obs_noise if args.obs_noise is not None else {
-    "isd": 1.2, "uscrn": 1.0, "merra2": 0.8, "merra2-field": 0.8, "era5-synth": 0.5}[args.obs_source]
+if args.base == "era5":
+    _w = [w for w in args.nud_windows.split(",") if w.strip() and int(w) <= 12]
+    if len(_w) < len([w for w in args.nud_windows.split(",") if w.strip()]):
+        print("NOTE: --base era5 uses nudging windows <= 12 h only (starts from ERA5 at t0-6h/t0-12h)")
+    args.nud_windows = ",".join(_w)
+    if not _w:
+        args.nud_types = ""
+STATION_SRC = args.obs_source in ("isd", "uscrn")
+if args.obs_noise is not None:
+    SIGMA_O = args.obs_noise
+elif STATION_SRC:
+    SIGMA_O = float(np.hypot(args.sigma_inst, args.sigma_repr))   # single-station total
+else:
+    SIGMA_O = {"merra2": 0.8, "merra2-field": 0.8, "era5-synth": 0.5}[args.obs_source]
 T_START = dt.datetime.fromisoformat(args.t0) - dt.timedelta(hours=30)
 T_END = dt.datetime.fromisoformat(args.t0) + dt.timedelta(hours=6 * args.steps)
 OBS_DIR = os.path.join(PROJ, "data", "obs")
@@ -388,11 +409,25 @@ else:
     OBSDF = load_station_csv(path)
     print(f"   {args.obs_source}: {OBSDF.sid.nunique()} stations from {os.path.basename(path)}")
 
-# height correction to model orography, and elevation QC
+# height correction to model orography, and ECMWF height window (dz = z_station - z_model)
+
+
+def in_window(dz, extra=None):
+    ok = np.isfinite(dz) & (dz >= -args.dz_below) & (dz <= args.dz_above)
+    if args.allow_no_elev:
+        ok |= ~np.isfinite(dz)
+    if extra is not None:
+        ok &= ~(np.abs(np.nan_to_num(dz)) > extra)
+    return ok
+
+
 zm = interp2(ZMOD, OBSDF.lat.values, OBSDF.lon.values)
 dz = OBSDF.elev.values - zm
 OBSDF["y"] = OBSDF.t2m_K.values + np.where(np.isfinite(dz), GAMMA * dz, 0.0)
-OBSDF = OBSDF[~(np.abs(np.nan_to_num(dz)) > args.max_dz)]
+_n0 = OBSDF.sid.nunique()
+OBSDF = OBSDF[in_window(dz)]
+print(f"   height window [-{args.dz_below:.0f}, +{args.dz_above:.0f}] m, lapse {args.lapse} K/km: "
+      f"{OBSDF.sid.nunique()} of {_n0} stations kept")
 
 ALLDF = OBSDF.copy()                                  # all times (withheld verification at leads)
 OBSDF = OBSDF[OBSDF.time.isin(OBS_TIMES)]              # insertion times only
@@ -405,7 +440,7 @@ print(f"   stations after QC: {len(sids)} (used {len(USE_SIDS)}, withheld {len(H
 _hv = ALLDF[ALLDF.sid.isin(HOLD_SIDS)]
 _hv = _hv.drop_duplicates("sid")
 _dz = _hv.elev.values - interp2(ZMOD, _hv.lat.values, _hv.lon.values)
-print(f"   withheld stations usable for verification (|dz| < {args.verify_max_dz:.0f} m): {int((np.abs(np.nan_to_num(_dz, nan=1e9)) < args.verify_max_dz).sum())}")
+print(f"   withheld stations usable for verification: {int(in_window(_dz, args.verify_max_dz).sum())}")
 
 # independent verification network (USCRN) — never inserted
 VER = None
@@ -415,9 +450,9 @@ if args.obs_source != "uscrn":
         VER = load_station_csv(vpath)
         vz = VER.elev.values - interp2(ZMOD, VER.lat.values, VER.lon.values)
         VER["y"] = VER.t2m_K.values + np.where(np.isfinite(vz), GAMMA * vz, 0.0)
-        VER = VER[~(np.abs(np.nan_to_num(vz)) > args.max_dz)]
-        _v1 = VER.drop_duplicates("sid"); _vz = _v1.elev.values - interp2(ZMOD, _v1.lat.values, _v1.lon.values)
-        print(f"   verification: USCRN {VER.sid.nunique()} stations, {int((np.abs(_vz) < args.verify_max_dz).sum())} with |dz| < {args.verify_max_dz:.0f} m ({os.path.basename(vpath)})")
+        _nv = VER.sid.nunique()
+        VER = VER[in_window(vz, args.verify_max_dz)]
+        print(f"   verification: USCRN {VER.sid.nunique()} of {_nv} stations in the height window ({os.path.basename(vpath)})")
     else:
         print("   verification: no USCRN file found (station verification skipped)")
 else:
@@ -454,34 +489,67 @@ def oi_increment(bg2t, idx, tag=""):
     d = obs_at(idx)
     if d.empty:
         return np.zeros_like(bg2t)
-    la, lo, y = d.lat.values, d.lon.values, d.y.values
-    innov = y - interp2(bg2t, la, lo)
-    keep = np.abs(innov) < 10.0                              # gross / background check
-    la, lo, innov = la[keep], lo[keep], innov[keep]
-    if args.superob:                                         # average within 1-deg cells
-        ci = np.round((la - LATS[0]) / (LATS[1] - LATS[0])).astype(int)
-        cj = np.round(np.mod(lo - LONS[0], 360) / (LONS[1] - LONS[0])).astype(int)
-        g = pd.DataFrame(dict(c=ci * 10000 + cj, la=la, lo=lo, d=innov)).groupby("c").mean()
-        la, lo, innov = g.la.values, g.lo.values, g.d.values
-    so2 = SIGMA_O ** 2
-    sb2 = max(float(np.var(innov)) - so2, 0.05)
+    la, lo, innov, so2k, sb2, qc = qc_innovations(bg2t, d)
+    if len(innov) == 0:
+        return np.zeros_like(bg2t)
     Coo = np.exp(-0.5 * (gc_dist(la[:, None], lo[:, None], la[None], lo[None]) / args.oi_L) ** 2)
     Cgo = np.exp(-0.5 * (gc_dist(LATS[_box[:, 0]][:, None], LONS[_box[:, 1]][:, None],
                                  la[None], lo[None]) / args.oi_L) ** 2)
-    w = np.linalg.solve(sb2 * Coo + so2 * np.eye(len(innov)), innov)
+    w = np.linalg.solve(sb2 * Coo + np.diag(so2k), innov)
     inc = np.zeros_like(bg2t)
     inc[_box[:, 0], _box[:, 1]] = sb2 * (Cgo @ w)
-    OI_LOG.append(dict(tag=tag, time=str(DATETIMES[idx]), n_obs=int(len(innov)),
+    OI_LOG.append(dict(tag=tag, time=str(DATETIMES[idx]), n_obs=int(len(innov)), **qc,
                        mean_innov=float(innov.mean()), rms_innov=float(np.sqrt((innov ** 2).mean())),
-                       sigma_b=float(np.sqrt(sb2)), sigma_o=SIGMA_O))
+                       sigma_b=float(np.sqrt(sb2)), sigma_o_mean=float(np.sqrt(so2k.mean()))))
     return inc.astype(np.float32)
+
+
+def qc_innovations(bg2t, d):
+    """ECMWF-style QC + 1-deg super-obs. Returns lat, lon, innovation, obs-error variance per
+    super-ob, background-error variance estimate, and QC counts."""
+    la, lo, y = d.lat.values, d.lon.values, d.y.values
+    innov = y - interp2(bg2t, la, lo)
+    n_in = len(innov)
+    keep = np.abs(innov) <= args.gross                       # gross check
+    la, lo, innov = la[keep], lo[keep], innov[keep]
+    n_gross = n_in - len(innov)
+    so2_single = SIGMA_O ** 2
+    sb2 = max(float(np.var(innov)) - so2_single, 0.05) if len(innov) > 1 else 1.0
+    keep = np.abs(innov) <= args.bgcheck * np.sqrt(sb2 + so2_single)   # background check
+    la, lo, innov = la[keep], lo[keep], innov[keep]
+    n_bg = int((~keep).sum())
+    n_per = np.ones(len(innov))
+    if args.superob and len(innov):
+        ci = np.round((la - LATS[0]) / (LATS[1] - LATS[0])).astype(int)
+        cj = np.round(np.mod(lo - LONS[0], 360) / (LONS[1] - LONS[0])).astype(int)
+        g = pd.DataFrame(dict(c=ci * 10000 + cj, la=la, lo=lo, d=innov, n=1.0)).groupby("c").agg(
+            la=("la", "mean"), lo=("lo", "mean"), d=("d", "mean"), n=("n", "sum"))
+        la, lo, innov, n_per = g.la.values, g.lo.values, g.d.values, g.n.values
+    if STATION_SRC and args.obs_noise is None:
+        so2k = args.sigma_inst ** 2 + args.sigma_repr ** 2 / n_per
+    else:
+        so2k = np.full(len(innov), SIGMA_O ** 2) / (n_per if args.superob else 1.0)
+    if len(innov) > 1:
+        sb2 = max(float(np.var(innov)) - float(np.mean(so2k)), 0.05)
+    return la, lo, innov, so2k, sb2, dict(n_raw=n_in, rej_gross=int(n_gross), rej_bg=n_bg)
+
+
+def bias_increment(bg2t, idx, tag=""):
+    """M1b: uniform CONUS-land shift equal to the mean QC'd innovation (bias-only control)."""
+    d = obs_at(idx)
+    if d.empty or M2FIELD is not None:
+        return np.zeros_like(bg2t)
+    _, _, innov, _, _, _ = qc_innovations(bg2t, d)
+    mb = float(innov.mean()) if len(innov) else 0.0
+    OI_LOG.append(dict(tag=tag or "bias", time=str(DATETIMES[idx]), mean_innov=mb))
+    return (mb * CONUS_LAND).astype(np.float32)
 
 
 def _vfilter(df):
     if df is None or df.empty:
         return df
     dz = df.elev.values - interp2(ZMOD, df.lat.values, df.lon.values)
-    return df[~(np.abs(np.nan_to_num(dz, nan=1e9)) > args.verify_max_dz)]
+    return df[in_window(dz, args.verify_max_dz)]
 
 
 def station_rmse(field2t, df):
@@ -546,6 +614,38 @@ def hypsometric_phi(dT_by_level):
 
 
 FIXW = dict(zip((1000, 925, 850), [float(x) for x in args.fix_weights.split(",")]))
+KAPPA = 0.2857
+
+
+def diagnose_pbl(frame):
+    """RAP-style mixed-layer depth from the model column (theta-excess method).
+    Returns (weights {p: array}, depth_hPa array, surface pressure hPa).
+    weight(p) = 1 - (ps - p) / (pbl_frac * (ps - p_top)), clipped to [0, 1], only above ground.
+    A column whose first above-ground level already exceeds theta_2m + dtheta is stable:
+    all weights are 0 (surface-only)."""
+    t2 = frame["2m_temperature"]
+    ps = frame["mean_sea_level_pressure"] * np.exp(-ZSFC / (RD * t2)) / 100.0   # hPa (ZSFC is geopotential)
+    th2 = t2 * (1000.0 / ps) ** KAPPA
+    ptop = np.full_like(t2, np.nan)
+    for p in sorted(LEVELS, reverse=True):                    # 1000, 925, ... upward
+        if p < 700:
+            break
+        th = frame["temperature"][LIDX[p]] * (1000.0 / p) ** KAPPA
+        above = p < ps
+        hit = above & np.isnan(ptop) & (th > th2 + args.pbl_dtheta)
+        ptop[hit] = p
+    ptop = np.where(np.isnan(ptop), 700.0, ptop)              # well-mixed through 700 hPa: cap
+    depth = np.clip(ps - ptop, 0.0, None)
+    w = {}
+    for p in LEVELS:
+        if p < 700:
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            wp = 1.0 - (ps - p) / (args.pbl_frac * depth)
+        wp = np.where((p < ps) & (depth > 0) & np.isfinite(wp), np.clip(wp, 0.0, 1.0), 0.0)
+        if np.any(wp > 0):
+            w[p] = wp.astype(np.float32)
+    return w, depth, ps
 
 
 def apply_increment(frame, inc2t, kind, scale=1.0):
@@ -557,6 +657,14 @@ def apply_increment(frame, inc2t, kind, scale=1.0):
         for p, v in dT.items():
             f["temperature"][LIDX[p]] += v
         if kind == "BAL-FIX":
+            for p, v in hypsometric_phi(dT).items():
+                f["geopotential"][LIDX[p]] += v
+    if kind in ("PBL", "BAL-PBL", "COL-PBL"):
+        wts, _, _ = diagnose_pbl(frame)
+        dT = {p: wp * inc for p, wp in wts.items()}
+        for p, v in dT.items():
+            f["temperature"][LIDX[p]] += v
+        if kind == "BAL-PBL" and dT:
             for p, v in hypsometric_phi(dT).items():
                 f["geopotential"][LIDX[p]] += v
     if kind in ("COL", "BAL", "REG"):
@@ -584,8 +692,36 @@ if args.base == "bg":
 else:
     ARMS["BASE"] = ARMS["ERA5"]
 ARMS["DIR-1F"] = (BASE_A, apply_increment(BASE_B, INC_B, "DIR"))
-for k in ("DIR", "COL", "BAL", "REG", "COL-FIX", "BAL-FIX"):
-    ARMS[f"{k}-2F" if "FIX" not in k else f"{k}"] = (apply_increment(BASE_A, INC_A, k), apply_increment(BASE_B, INC_B, k))
+for k in ("DIR", "COL", "BAL", "REG", "COL-FIX", "BAL-FIX", "COL-PBL", "BAL-PBL"):
+    ARMS[f"{k}-2F" if ("FIX" not in k and "PBL" not in k) else f"{k}"] = (
+        apply_increment(BASE_A, INC_A, k), apply_increment(BASE_B, INC_B, k))
+# M1b: bias-only control (uniform shift by the mean innovation, both frames)
+ARMS["BIAS"] = (apply_increment(BASE_A, bias_increment(BASE_A["2m_temperature"], I0 - 1), "DIR"),
+                apply_increment(BASE_B, bias_increment(BASE_B["2m_temperature"], I0), "DIR"))
+_w_b, _dep_b, _ps_b = diagnose_pbl(BASE_B)
+_mixed_b = np.any(np.stack([w > 0 for w in _w_b.values()]), axis=0) if _w_b else np.zeros_like(_dep_b, bool)
+PBL_STATS = dict(stable_frac_conus_land=float(np.mean(~_mixed_b[CONUS_LAND])),
+                 mean_depth_hPa=float(np.mean(_dep_b[CONUS_LAND])))
+print(f"   PBL at t0 (BASE): {100*PBL_STATS['stable_frac_conus_land']:.0f} % of CONUS land columns surface-only (stable), "
+      f"mean diagnosed depth {PBL_STATS['mean_depth_hPa']:.0f} hPa")
+
+
+def iau_chain(kind):
+    """M4 (GEOS IAU analogue): one increment from the t0 observations, added as 1/4 after each
+    6 h step from t0-24 h to t0 (base bg only)."""
+    A, B = era5_frame(S0), era5_frame(S0 + 1)
+    for idx in OBS_IDX:
+        C = pred_frame(forecast(A, B, idx - 2, 1), 0)
+        C = apply_increment(C, INC_B, kind, scale=0.25)
+        A, B = B, C
+    return A, B
+
+
+if args.base == "bg" and M2FIELD is None:
+    for k in [x.strip() for x in args.iau_kinds.split(",") if x.strip()]:
+        t_ = time.time()
+        ARMS[f"IAU-{k}"] = iau_chain(k)
+        print(f"   IAU-{k}: 4 x 1/4 of the t0 increment, {time.time()-t_:.1f} s")
 
 ALPHA = 1.0 - np.exp(-6.0 / args.nud_tau)
 nud_times = OBS_IDX if args.nud_obs == "all" else [I0 - 1, I0]
@@ -661,6 +797,10 @@ if not args.skip_checks:
 # =============================================================================
 # 8. Forecasts and scores
 # =============================================================================
+if args.arms != "all":
+    keep = {"ERA5", "BASE"} | {a.strip() for a in args.arms.split(",")}
+    ARMS = {k: v for k, v in ARMS.items() if k in keep}
+print(f"   arms: {list(ARMS)}")
 print(f"\n[8] Running {len(ARMS)} forecasts x {args.steps} steps ...")
 FC, ROWS = {}, []
 for name, (A, B) in ARMS.items():
@@ -685,6 +825,41 @@ for name in ARMS:
                          rmse_t2m_withheld=station_rmse(f["2m_temperature"], ALLDF[(ALLDF.time == pd.Timestamp(DATETIMES[I0 + 1 + k]))
                                                                                    & ALLDF.sid.isin(HOLD_SIDS)])))
 SC = pd.DataFrame(ROWS)
+
+
+def station_err(field2t, df):
+    df = _vfilter(df)
+    if df is None or df.empty:
+        return np.array([])
+    return interp2(field2t, df.lat.values, df.lon.values) - df.y.values
+
+
+BOOT = []
+_rngb = np.random.default_rng(args.seed + 1)
+for k, lead in enumerate(LEADS):
+    tlead = pd.Timestamp(DATETIMES[I0 + 1 + k])
+    nets = {"uscrn": None if VER is None else VER[VER.time == tlead],
+            "withheld": ALLDF[(ALLDF.time == tlead) & ALLDF.sid.isin(HOLD_SIDS)]}
+    for net, df in nets.items():
+        eb = station_err(pred_frame(FC["BASE"], k)["2m_temperature"], df)
+        if len(eb) < 5:
+            continue
+        idx = _rngb.integers(0, len(eb), size=(args.boot, len(eb)))
+        rb = np.sqrt(np.mean(eb[idx] ** 2, axis=1))
+        rb0 = np.sqrt(np.mean(eb ** 2))
+        for name in ARMS:
+            if name == "BASE":
+                continue
+            ea = station_err(pred_frame(FC[name], k)["2m_temperature"], df)
+            ra = np.sqrt(np.mean(ea[idx] ** 2, axis=1))
+            dpct = 100 * (ra - rb) / rb
+            BOOT.append(dict(arm=name, lead_h=lead, net=net, n_st=len(eb),
+                             d_pct=100 * (np.sqrt(np.mean(ea ** 2)) - rb0) / rb0,
+                             lo=float(np.percentile(dpct, 2.5)), hi=float(np.percentile(dpct, 97.5))))
+BOOT = pd.DataFrame(BOOT)
+if len(BOOT):
+    BOOT["sig"] = (BOOT.hi < 0) | (BOOT.lo > 0)
+    BOOT.to_csv(os.path.join(OUT, "bootstrap_station_diffs.csv"), index=False)
 NOISE = pd.DataFrame([dict(lead_h=lead,
                            conus_rms_2t=wrms(pred_frame(NOISE_FC, k)["2m_temperature"] - pred_frame(FC["ERA5"], k)["2m_temperature"], CONUS_LAND))
                       for k, lead in enumerate(LEADS)])
@@ -751,7 +926,8 @@ for name in ARMS:
 # 9. Plots
 # =============================================================================
 print("\n[9] Plotting ...")
-ORDER = ["ERA5", "BASE", "DIR-1F", "DIR-2F", "COL-2F", "BAL-2F", "REG-2F", "COL-FIX", "BAL-FIX"] + \
+ORDER = ["ERA5", "BASE", "BIAS", "DIR-1F", "DIR-2F", "COL-2F", "BAL-2F", "REG-2F", "COL-FIX", "BAL-FIX",
+         "COL-PBL", "BAL-PBL", "IAU-DIR", "IAU-PBL", "IAU-BAL-PBL"] + \
         [a for a in ARMS if a.startswith("NUD")]
 for a in ARMS:
     if a not in ORDER:
@@ -762,7 +938,10 @@ COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d6
        "NUD-DIR": "#e377c2", "NUD-COL": "#bcbd22", "NUD-BAL": "#2ca02c", "NUD-REG": "#8c564b", "NUD-FIX": "#17becf",
        "NUD6-DIR": "#f781bf", "NUD6-BAL": "#4daf4a", "NUD6-FIX": "#377eb8",
        "NUD12-DIR": "#e41a1c", "NUD12-BAL": "#984ea3", "NUD12-FIX": "#ff7f00",
-       "NUD24-DIR": "#e377c2", "NUD24-BAL": "#2ca02c", "NUD24-FIX": "#9467bd"}
+       "NUD24-DIR": "#e377c2", "NUD24-BAL": "#2ca02c", "NUD24-FIX": "#9467bd",
+       "BIAS": "#7f7f7f", "COL-PBL": "#bcbd22", "BAL-PBL": "#8c564b", "IAU-DIR": "#ff9896", "IAU-PBL": "#c49c94",
+       "IAU-BAL-PBL": "#9edae5", "NUD-BAL-PBL": "#006d2c", "NUD6-BAL-PBL": "#31a354", "NUD12-BAL-PBL": "#74c476",
+       "NUD24-BAL-PBL": "#006d2c", "NUD6-PBL": "#a1d99b", "NUD24-PBL": "#41ab5d"}
 STY = {"ERA5": "--", "BASE": "--"}
 EXT = [230, 300, 20, 55]
 
@@ -790,10 +969,10 @@ fig = plt.figure(figsize=(17, 9))
 lim = max(1.0, np.percentile(np.abs((TRUE_B["2m_temperature"] - BASE_B["2m_temperature"])[CONUS]), 98))
 panels = [(f"ERA5 − BASE ({args.base}), 2 m T", TRUE_B["2m_temperature"] - BASE_B["2m_temperature"]),
           (f"Increment at t0 from {args.obs_source} (● used, ✕ withheld)", INC_B),
-          ("Residual after DIR-2F (ERA5 − arm)", TRUE_B["2m_temperature"] - ARMS["DIR-2F"][1]["2m_temperature"]),
+          ("Residual after DIR-2F (ERA5 − arm)", TRUE_B["2m_temperature"] - ARMS.get("DIR-2F", ARMS["BASE"])[1]["2m_temperature"]),
           ("ERA5 − BASE, T850", TRUE_B["temperature"][L850] - BASE_B["temperature"][L850]),
-          ("Increment at T850: BAL-2F − BASE", ARMS["BAL-2F"][1]["temperature"][L850] - BASE_B["temperature"][L850]),
-          ("Residual T850 after BAL-2F", TRUE_B["temperature"][L850] - ARMS["BAL-2F"][1]["temperature"][L850])]
+          ("Increment at T850: BAL-2F − BASE", ARMS.get("BAL-2F", ARMS["BASE"])[1]["temperature"][L850] - BASE_B["temperature"][L850]),
+          ("Residual T850 after BAL-2F", TRUE_B["temperature"][L850] - ARMS.get("BAL-2F", ARMS["BASE"])[1]["temperature"][L850])]
 for i, (title, fld) in enumerate(panels):
     ax, kw = mapax(fig, (2, 3, i + 1))
     im = ax.pcolormesh(LONS, LATS, fld, cmap="RdBu_r", vmin=-lim, vmax=lim, shading="auto", **kw)
@@ -905,6 +1084,40 @@ for r, k in enumerate(leads_show):
 fig.colorbar(im, ax=fig.axes, shrink=0.6, label="forecast − ERA5, 2 m T (K)")
 savefig(fig, "fig7_error_maps.png")
 
+# (8) bootstrap: % change in station RMSE vs BASE with 95 % CI
+if len(BOOT):
+    nets = [n for n in ("uscrn", "withheld") if n in set(BOOT.net)]
+    lsel = [l for l in (6, 12, 24, 48, 72) if l in LEADS]
+    arms_b = [a for a in ORDER if a not in ("BASE",) and a in set(BOOT.arm)]
+    fig, axs = plt.subplots(len(nets), 1, figsize=(max(10, 0.9 * len(arms_b) * len(lsel) / 2), 4.2 * len(nets)), squeeze=False)
+    for r, net in enumerate(nets):
+        ax = axs[r, 0]
+        wbar = 0.8 / len(lsel)
+        for j, l in enumerate(lsel):
+            sub = BOOT[(BOOT.net == net) & (BOOT.lead_h == l)].set_index("arm").reindex(arms_b)
+            x = np.arange(len(arms_b)) + (j - (len(lsel) - 1) / 2) * wbar
+            ax.errorbar(x, sub.d_pct, yerr=[sub.d_pct - sub.lo, sub.hi - sub.d_pct], fmt="o", ms=3,
+                        capsize=2, label=f"+{l} h")
+        ax.axhline(0, color="k", lw=0.8)
+        ax.set_xticks(range(len(arms_b))); ax.set_xticklabels(arms_b, rotation=60, fontsize=8)
+        n_st = int(BOOT[BOOT.net == net].n_st.median())
+        ax.set_ylabel("% change in RMSE vs BASE"); ax.grid(alpha=0.3)
+        ax.set_title(f"2 m T vs {net} stations (~{n_st}), paired bootstrap 95 % CI  (<0 = better)")
+        ax.legend(fontsize=7, ncol=len(lsel))
+    fig.tight_layout()
+    savefig(fig, "fig8_bootstrap_station.png")
+
+# (9) PBL diagnosis at t0 for the BASE state
+fig = plt.figure(figsize=(14, 4.5))
+ax, kw = mapax(fig, (1, 2, 1))
+im = ax.pcolormesh(LONS, LATS, np.where(CONUS_LAND, _dep_b, np.nan), cmap="viridis", vmin=0, vmax=300, shading="auto", **kw)
+plt.colorbar(im, ax=ax, shrink=0.7, label="hPa"); ax.set_title("Diagnosed mixed-layer depth at t0 (BASE)")
+ax, kw = mapax(fig, (1, 2, 2))
+w925 = _w_b.get(925, np.zeros_like(_dep_b))
+im = ax.pcolormesh(LONS, LATS, np.where(CONUS_LAND, w925, np.nan), cmap="magma", vmin=0, vmax=1, shading="auto", **kw)
+plt.colorbar(im, ax=ax, shrink=0.7); ax.set_title("COL-PBL weight at 925 hPa (0 = surface-only)")
+savefig(fig, "fig9_pbl_diagnosis.png")
+
 # =============================================================================
 # 10. Summary
 # =============================================================================
@@ -912,7 +1125,10 @@ summ = dict(t0=args.t0, steps=args.steps, data=DATA, base=args.base, obs_source=
             n_stations_used=len(USE_SIDS), n_withheld=len(HOLD_SIDS),
             n_uscrn=0 if VER is None else int(VER.sid.nunique()), obs_noise_K=SIGMA_O, oi_L_km=args.oi_L, col_top_hPa=args.col_top,
             nud_tau_h=args.nud_tau, nud_alpha=float(ALPHA), nud_obs=args.nud_obs,
-            regression={"b_T": BT, "R2_T": R2T, "b_Z": BZ, "R2_Z": R2Z}, oi_log=OI_LOG, checks=CHECKS)
+            regression={"b_T": BT, "R2_T": R2T, "b_Z": BZ, "R2_Z": R2Z}, oi_log=OI_LOG, checks=CHECKS,
+            qc=dict(lapse_K_per_km=args.lapse, dz_below=args.dz_below, dz_above=args.dz_above, gross_K=args.gross,
+                    bgcheck=args.bgcheck, sigma_inst=args.sigma_inst, sigma_repr=args.sigma_repr),
+            pbl=PBL_STATS)
 key = SC[SC.lead_h.isin([6, 24, 48, 72])].pivot(index="arm", columns="lead_h", values="gap_t2m_conus")
 summ["gap_closed_t2m"] = {a: {int(k): (None if pd.isna(v) else round(100 * float(v), 1))
                               for k, v in row.items()} for a, row in key.iterrows()}
@@ -948,5 +1164,16 @@ if args.base == "era5":
 print("\nGAP CLOSED, CONUS 2 m T vs ERA5 (%)  [0 = BASE, 100 = ERA5 start]")
 print("   (not defined for --base era5)" if args.base == "era5" else
       (100 * key.loc[[a for a in ORDER if a in key.index]]).round(1).to_string())
+if len(BOOT):
+    print("\nPAIRED STATION BOOTSTRAP: % change in 2 m T RMSE vs BASE  [95 % CI]  (* = significant, <0 = better)")
+    for net in ("uscrn", "withheld"):
+        sub = BOOT[BOOT.net == net]
+        if sub.empty:
+            continue
+        lsel = [l for l in (6, 12, 24, 48, 72) if l in LEADS]
+        print(f"  {net} (~{int(sub.n_st.median())} stations)")
+        cell = sub.assign(txt=sub.apply(lambda r: f"{r.d_pct:+5.1f} [{r.lo:+.1f},{r.hi:+.1f}]{'*' if r.sig else ' '}", axis=1))
+        t = cell[cell.lead_h.isin(lsel)].pivot(index="arm", columns="lead_h", values="txt")
+        print(t.loc[[a for a in ORDER if a in t.index]].to_string())
 print("=" * 76)
 print(f"Outputs in {OUT}")
