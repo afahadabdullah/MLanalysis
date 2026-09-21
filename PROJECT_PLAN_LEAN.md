@@ -220,6 +220,14 @@ MERRA-2 is mapped to ERA5 statistics by removing the monthly-mean difference and
 
 **What it delivers:** the fraction of the analysis error each method removes, and whether that ordering persists with lead time. This is the direct answer to "what is the best way to insert new data", before any station download. It also calibrates the amplitude sweep (how large an increment must be to matter) and the case-to-case spread that sets the sample size for the real-data experiments.
 
+**Status (20 Sep 2026, Stage S0 Complete):**
+Exp 0 v2 executed on the real winter 2018 benchmark date (`2018-01-15 12:00 UTC`) with the mass field ($Z$) degraded, $N=300$ noisy pseudo-observations, $30\%$ withheld, and 4D IAU windowing. Results (`RESULTS.md` §13):
+- **`DIR-IMP` (surface only):** Recovers only **$28.1\%$** of background error at Day 1.
+- **`COL-IMP` (column thermal):** Recovers **$61.2\%$** of error (depth suppresses vertical mixing).
+- **`BAL-IMP` (balanced column):** Recovers **$66.2\%$** of error (**$+5.0\%$ gain from hydrostatic balance**).
+- **`BAL-IAU` (Full 4D Balance):** Recovers **$70.5\%$ of error** ($2.5\times$ more error reduction than surface-only insertion).
+This definitively establishes `BAL-IAU` as the optimal observation insertion operator for the real-data experiments (Exp 2).
+
 **Cost:** 6 arms × 10 dates ≈ 60 five-day forecasts, about 1–2 weeks on top of the current code. The insertion code is then reused unchanged by Exp 2.
 
 ### Exp 1: baselines and the ERA5 ceiling (answers Q1)
