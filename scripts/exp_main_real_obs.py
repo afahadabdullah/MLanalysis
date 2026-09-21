@@ -159,6 +159,11 @@ ap.add_argument("--fdv-sig", default="2m_temperature=1.5,temperature=1.0,specifi
                 help="4DV: background-error std per control variable (K, kg/kg, m/s, m2/s2)")
 ap.add_argument("--fdv-era5-weight", type=float, default=1.0,
                 help="HYB-4DV: weight of the ERA5 anchor term at t0 (0 = off)")
+ap.add_argument("--fdv-relax-t0", type=int, default=1,
+                help="HYB-4DV: launch t0 frame = relax_ERA5(F(x_b)) + [F(x_a) - F(x_b)], i.e. the same ERA5 "
+                     "anchoring as HYB-DIR at t0 plus the model-evolved 4D-Var increment (1), or raw F(x_a) (0)")
+ap.add_argument("--jac-vars", default="all", choices=["all", "T", "TZ"],
+                help="JAC: which responses to use (all variables, temperature only, or temperature+geopotential)")
 ap.add_argument("--grad-selftest", type=int, default=1, help="Check the differentiable step vs the forward model")
 ap.add_argument("--hyb-types", default="DIR,BAL-PBL",
                 help="Station increment type(s) added on top of the ERA5-relaxed state in the hybrid arms")
@@ -1167,9 +1172,14 @@ if _need_jac or _need_4dv:
         step = make_step(start)
         rng = np.random.default_rng(args.seed + 7)
         Aj, Bj = _jnp(A), _jnp(B)
-        targets = [("2m_temperature", None), ("10m_u_component_of_wind", None), ("10m_v_component_of_wind", None),
-                   ("mean_sea_level_pressure", None)]
-        for v in ("temperature", "specific_humidity", "u_component_of_wind", "v_component_of_wind", "geopotential"):
+        if args.jac_vars == "all":
+            targets = [("2m_temperature", None), ("10m_u_component_of_wind", None), ("10m_v_component_of_wind", None),
+                       ("mean_sea_level_pressure", None)]
+            _vv = ("temperature", "specific_humidity", "u_component_of_wind", "v_component_of_wind", "geopotential")
+        else:
+            targets = [("2m_temperature", None)]
+            _vv = ("temperature",) if args.jac_vars == "T" else ("temperature", "geopotential")
+        for v in _vv:
             targets += [(v, LIDX[p]) for p in LEVELS if p >= args.col_top]
         num = {t: 0.0 for t in targets}; den = 0.0
         for k in range(K):
@@ -1241,7 +1251,7 @@ if _need_jac or _need_4dv:
         return ((1 - wi) * (1 - wj) * f[i0, j0] + (1 - wi) * wj * f[i0, j1]
                 + wi * (1 - wj) * f[i0 + 1, j0] + wi * wj * f[i0 + 1, j1])
 
-    def fourdvar(Ab, Bb, start, era5_anchor=False, tag="4dv"):
+    def fourdvar(Ab, Bb, start, era5_anchor=False, tag="4dv", relax_t0=None):
         """Strong-constraint two-frame 4D-Var over the window [t0-12h, t0].
         Control: increments to (x_{-12}, x_{-6}) for 2 m T and T, q, u, v, Z at levels >= --col-top,
         in B^1/2 space (Gaussian correlation L=--fdv-L, std --fdv-sig), over the OI box.
@@ -1320,6 +1330,11 @@ if _need_jac or _need_4dv:
                             n_obs=[int(len(o[0])) for o in obs_terms])
         print(f"   {tag}: J {hist[0]:.1f} -> {hist[-1]:.1f} in {res.nit} iterations ({time.time()-t_:.0f} s)")
         C_a = pred_frame(forecast(A_a, B_a, start, 1), 0)      # launch pair with the operational forward
+        if relax_t0 is not None:                                 # HYB-4DV: same t0 anchoring as HYB-DIR
+            C_bf = pred_frame(forecast(Ab, Bb, start, 1), 0)
+            C_r = relax_to_era5(C_bf, era5_frame(start + 2), relax_t0)
+            C_a = {v: (C_r[v] + (C_a[v] - C_bf[v])).astype(np.float32) for v in STATE_VARS}
+            FDV_LOG[tag]["t0_relaxed"] = True
         return B_a, C_a
 
     FDV_LOG = {}
@@ -1338,7 +1353,8 @@ if _need_jac or _need_4dv:
         if H_ and want(f"HYB{H_}-4DV") and args.hyb_tau > 0:
             A_E = 1.0 - np.exp(-6.0 / args.hyb_tau)
             Ab, Bb = hybrid_chain("DIR", H_, A_E, ALPHA, end_idx=I0 - 1, last_obs=False, tag=f"hyb{H_}-4dvbg")
-            ARMS[f"HYB{H_}-4DV"] = fourdvar(Ab, Bb, I0 - 2, era5_anchor=True, tag=f"HYB{H_}-4DV")
+            ARMS[f"HYB{H_}-4DV"] = fourdvar(Ab, Bb, I0 - 2, era5_anchor=True, tag=f"HYB{H_}-4DV",
+                                            relax_t0=A_E if args.fdv_relax_t0 else None)
 
 # hybrid-cycle variants (weighted 4DIAU, level-selective replay, bias correction; any station kind incl. JAC)
 if H_ and args.base == "bg" and M2FIELD is None and args.hyb_tau > 0:

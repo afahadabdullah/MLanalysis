@@ -1000,3 +1000,31 @@ Same setup as §21 (72 h cycle, full-state ERA5 relaxation τ = 6 h + ISD increm
    - `HYB72-DIR` remains the most consistent long-range performer across both networks.
    - `HYB72-4DV` provides superior short-range analysis fidelity and the best absolute Day-3 USCRN score.
    - Gradient-based ML DA methods through GraphCast are now fully validated and operational on GPU.
+
+---
+
+## 25. Review of §24 (ML-specific methods) and fixes
+
+### 25.1 Corrections to §24
+- **Table 24.1:** the ERA5 "USCRN +12h" value (1.765) and several other +12 h entries are the withheld-ISD numbers; the script prints USCRN RMSE only at 6/24/48/72 h. Use the bootstrap tables for +12 h at USCRN.
+- **Standalone 4DV vs ERA5:** §24.2 correctly shows 4DV and JAC-2F are *worse* than the ERA5 start at most leads; they only compete with the other single-shot insertions into the 24 h background. The headline for 4DV is relative to BASE and DIR-1F, not to ERA5.
+- **HYB72-4DV "best Day-3 USCRN" (3.573 K)** is not a robust improvement over HYB72-DIR (3.610 K): both CIs vs ERA5 overlap, and HYB72-4DV is worse than HYB72-DIR at withheld stations from 24 h on (vs BASE: −6.5/−5.3/−5.8 % vs −6.9/−9.0/−7.9 %), with gap closed 58.8 % vs 110.6 % at 72 h.
+
+### 25.2 What the ML-method run actually shows
+1. **4D-Var through GraphCast is the best single-shot insertion, and it demonstrates the project hypothesis directly.** Into the same 24 h background with the same stations, 4DV improves significantly on BASE at every lead on withheld ISD (−4.7 %* at +6 h, −2.1 %* at +72 h) and at USCRN +6/+12 h, where direct insertion (DIR-1F +1.9 %, JAC-2F +4.2 % at +6 h) does not. Yet at t0 **4DV fits the withheld stations less closely** (2.01 K vs 1.78 K for DIR-1F). A state that is less close to the observations but consistent with the model's own dynamics across both input frames forecasts better: **consistency beats closeness** for an ML model, as for a dynamical one.
+2. **The model's own balance says surface increments should stay shallow.** GraphCast's tangent-linear 6 h response gives dT(p)/dT₂ₘ = 0.29 / 0.14 / 0.03 at 1000 / 925 / 850 hPa — shallower than the statistical regression (0.44 / 0.24 / 0) and much shallower than the fixed profile (1.0 / 0.6 / 0.2), consistent with the stable winter-morning boundary layer and with the depth penalties in §18–20. Using it as an insertion operator (JAC-2F) does not help, however — worse than DIR-1F at +6 h. Likely cause: the JAC operator also changes winds, humidity and MSLP from the 2 m T increment through smoothed regressions, adding noise. Test: `--jac-vars T` (temperature only).
+3. **Inside the anchored cycle, JAC adds nothing** (HYB72-JAC ≈ HYB72-DIR).
+4. **HYB72-4DV improves 6–12 h but loses the t0 anchoring.** t0 T850 error 0.54 K vs 0.22 K for HYB72-DIR, because the 4D-Var launch frame F(xₐ) was not relaxed to ERA5 at t0 (only a weak anchor term over the analysis box). Hence better at 6–12 h, worse from 48 h.
+
+### 25.3 Fixes in the script
+- **`--fdv-relax-t0 1` (now default):** HYB72-4DV launch frame = relax_ERA5(F(x_b)) + [F(x_a) − F(x_b)] — the same ERA5 anchoring at t0 as HYB72-DIR, plus the model-evolved 4D-Var increment. Expected: keep the 6–12 h gain and restore the 48–72 h performance.
+- **`--jac-vars {all,T,TZ}`:** restrict the model-Jacobian operator to temperature (and geopotential).
+
+### 25.4 Rerun
+```bash
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --long-nud 72 \
+    --hyb-types DIR,JAC,4DV --jac-vars T \
+    --arms HYB72-DIR,HYB72-4DV,4DV,JAC-2F,DIR-1F,REPLAY72 \
+    --outdir runs/exp_main/20180115T12_isd_bg_mlda_v2
+```
+Please paste the log lines for the **gradient self-test** and the **4D-Var cost reduction** (J₀ → J_final, iterations) — they were not in the pasted output and are needed to confirm the gradients are right on the real model.
