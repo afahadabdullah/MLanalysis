@@ -93,6 +93,8 @@ parser.add_argument("--sigma-lon", type=float, default=6.0, help="Lon Gaussian s
 parser.add_argument("--proj", default=os.environ.get("PROJ", "/home/afahad/project/MLanalysis"),
                     help="Project root directory")
 parser.add_argument("--outdir", default=None, help="Output directory (default: <PROJ>/runs/exp0_twin)")
+parser.add_argument("--sample", default=None,
+                    help="Path to custom sample dataset NetCDF (default: data/sample/source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc)")
 parser.add_argument("--dpi", type=int, default=150, help="Figure DPI (default: 150)")
 args = parser.parse_args()
 
@@ -106,7 +108,7 @@ PARAMS_FILE = os.path.join(
     "GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - mesh 2to5 - precipitation input and output.npz",
 )
 STATS_DIR = os.path.join(DATA_DIR, "stats")
-SAMPLE_FILE = os.path.join(
+SAMPLE_FILE = args.sample or os.path.join(
     DATA_DIR, "sample",
     "source-era5_date-2022-01-01_res-1.0_levels-13_steps-04.nc",
 )
