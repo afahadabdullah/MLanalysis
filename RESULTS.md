@@ -1131,3 +1131,15 @@ Although the v3 run succeeded, L-BFGS terminated early:
 3. **Outer Loop Backtracking:** Each outer loop tests the full nonlinear cost with step-halving backtracking to guarantee monotonic descent.
 4. **Diagnostics:** Prints the CG residual, gradient norm, innovation $\chi^2/N_{\text{obs}}$, and Desroziers ratio ($\sigma_{\text{true}}/\sigma_{\text{assumed}}$).
 
+
+### 27.4 Correction to 27.3: L-BFGS was converged; the limit is the obs-error setting (lbfgs2 run)
+Rerun with `--fdv-solver lbfgs --fdv-iter 60 --fdv-restarts 3` (`runs/exp_main/20180115T12_isd_bg_4dv_lbfgs2`):
+
+| arm | J (start → end) | iters | \|g₁\|/\|g₀\| | innovation χ²/obs (t0−6h, t0) | Desroziers σo ratio (t0−6h, t0) |
+|---|---|:---:|:---:|:---:|:---:|
+| 4DV | 3060.6 → 2542.7 | 14 | 1.3e-4 | 4.38, 5.53 | 1.89, 2.15 |
+| HYB72-4DV | 2548.4 → 2190.4 | 14 | 6.3e-5 | 3.72, 4.54 | 1.77, 1.99 |
+
+- The restart made no further progress, and every forecast table is **bit-identical** to the v3 run. The gradient fell by 4 orders of magnitude, so **L-BFGS reached the true minimum**. The "FACTR*EPSMCH" message was a normal stop, not a float32 stall. The Gauss-Newton solver is not needed for this case.
+- **The partial fit (Jo ≈ 1.6–2 × N_obs/2) is set by the error settings.** Desroziers says the true station error is about **2× the assumed σo = 1.12 K, i.e. ≈ 2.0–2.4 K**. Innovation χ² ≈ 4.4–5.5 ≈ ratio² (3.6–4.6) + HBHᵀ/R (≈ 0.8–1). So the background error is about right and the **observation (representativeness) error is underestimated**: a 1° cell cannot represent point stations in stable winter PBLs.
+- **Implication:** the same σo is used by the OI in DIR/HYB-DIR, so those arms over-weight the stations too. Next tests: `--fdv-sigo-scale 2.0` (4D-Var only) and `--sigma-repr 2.0` (all arms, σo ≈ 2.06 K, consistent).
