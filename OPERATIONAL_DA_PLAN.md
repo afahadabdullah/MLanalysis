@@ -183,3 +183,31 @@ python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --bas
 python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source era5-synth          # twin control
 ```
 Not possible yet on this data: nudging windows > 24 h (ERA5 starts at t0−30 h, ISD at t0−36 h) and any 00 UTC or summer case — those need new downloads.
+
+### 11.1 Added: 3-day 6-hourly nudging spin-up (`--long-nud 72`)
+
+Operational-style cycling before the forecast: cold start from ERA5 at t0−78 h / t0−72 h, then 12 GraphCast steps with a nudging increment from that time's ISD stations after every step (α = 0.63, τ = 6 h), up to t0; the 72 h forecast starts from the nudged pair.
+
+| Arm | Meaning |
+|---|---|
+| `NUD72-BAL` | 3-day nudging with the best nudging type so far (BAL: surface + regressed column + hypsometric Z; `--long-nud-types` for others, e.g. `BAL,BAL-PBL`) |
+| `FREE72` | Same 3-day chain with no observations (a 72 h GraphCast forecast): separates what the nudging adds from what the older starting point loses |
+
+Read it against `BASE` (24 h background) and `NUD24-*`: does nudging 12 cycles instead of 4 keep more station information, or does the background drift (FREE72) outweigh it?
+
+**Data to download (login node) for t0 = 2018-01-15 12 UTC:**
+```bash
+python scripts/download_era5_cloud.py  --date 2018-01-12 --time 12:00 --steps 24   # frames t0-78 h ... t0+72 h
+python scripts/download_isd_lite.py    --start 2018-01-12T00 --end 2018-01-18T12
+python scripts/download_uscrn_range.py --start 2018-01-12T00 --end 2018-01-18T12
+```
+→ `data/era5/source-era5_date-2018-01-12_res-1.0_levels-13_steps-24.nc` (~2× the current file), `data/obs/isd_lite_20180112T00_20180118T12.csv`, `data/obs/uscrn_20180112T00_20180118T12.csv`. The script finds them automatically (it picks the observation files whose date range covers the run); if the ERA5 file is missing it stops and prints these commands.
+
+**Run:**
+```bash
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --long-nud 72
+# quicker, only the arms needed for this comparison:
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --long-nud 72 \
+    --nud-windows 24 --nud-types BAL --arms DIR-1F,NUD-BAL,FREE72,NUD72-BAL
+```
+The same longer ERA5 file also serves every other arm, so it can replace the steps-16 file.

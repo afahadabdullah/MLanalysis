@@ -132,6 +132,10 @@ ap.add_argument("--col-top", type=int, default=500, help="Top level (hPa) of col
 ap.add_argument("--nud-types", default="DIR,BAL-PBL,FIX", help="Increment types used by nudging arms (DIR, BAL, FIX, REG, PBL, BAL-PBL)")
 ap.add_argument("--nud-windows", default="6,24", help="Nudging window(s) in hours, comma-separated (e.g. '6', '24', or '6,24')")
 ap.add_argument("--nud-tau", type=float, default=6.0, help="Nudging relaxation time (h)")
+ap.add_argument("--long-nud", type=int, default=0,
+                help="Long nudging spin-up (h, multiple of 6), e.g. 72 = 6-hourly nudging for 3 days before t0 "
+                     "(base bg only; needs an ERA5 file starting at t0-(long+6)h and stations from then)")
+ap.add_argument("--long-nud-types", default="BAL", help="Increment type(s) for the long nudging arm(s)")
 ap.add_argument("--nud-obs", default="all", choices=["all", "last2"],
                 help="Nudge with obs at all cycles or only last 2")
 ap.add_argument("--seed", type=int, default=42)
@@ -144,9 +148,18 @@ args = ap.parse_args()
 T0 = np.datetime64(dt.datetime.fromisoformat(args.t0))
 t_launch = dt.datetime.fromisoformat(args.t0) - dt.timedelta(hours=24)
 PROJ = args.proj
-DATA = args.data or os.path.join(
-    PROJ, "data", "era5",
-    f"source-era5_date-{t_launch:%Y-%m-%d}_res-1.0_levels-13_steps-16.nc")
+if args.long_nud and args.long_nud % 6:
+    raise SystemExit("--long-nud must be a multiple of 6 h")
+LEAD_BACK_H = max(24, args.long_nud)                        # how far before t0 the data must start (+6 h)
+if args.data:
+    DATA = args.data
+else:
+    _t_l = dt.datetime.fromisoformat(args.t0) - dt.timedelta(hours=LEAD_BACK_H)
+    DATA = os.path.join(PROJ, "data", "era5",
+                        f"source-era5_date-{_t_l:%Y-%m-%d}_res-1.0_levels-13_steps-{LEAD_BACK_H // 6 + 12:02d}.nc")
+    if not os.path.exists(DATA) and not args.long_nud:     # fall back to the standard 24 h-window file
+        DATA = os.path.join(PROJ, "data", "era5",
+                            f"source-era5_date-{t_launch:%Y-%m-%d}_res-1.0_levels-13_steps-16.nc")
 TAG = dt.datetime.fromisoformat(args.t0).strftime("%Y%m%dT%H")
 OUT = args.outdir or os.path.join(PROJ, "runs", "exp_main", f"{TAG}_{args.obs_source}_{args.base}")
 if args.base == "era5":
@@ -168,11 +181,26 @@ T_END = dt.datetime.fromisoformat(args.t0) + dt.timedelta(hours=6 * args.steps)
 OBS_DIR = os.path.join(PROJ, "data", "obs")
 
 
+T_NEED0 = dt.datetime.fromisoformat(args.t0) - dt.timedelta(hours=max(30, args.long_nud))
+
+
 def _default_csv(prefix):
-    import glob
-    exact = os.path.join(OBS_DIR, f"{prefix}_{(T_START.replace(hour=0)):%Y%m%dT%H}_*.csv")
-    c = sorted(glob.glob(exact)) or sorted(glob.glob(os.path.join(OBS_DIR, f"{prefix}_*.csv")))
-    return c[0] if c else None
+    """Pick an observation CSV named <prefix>_<start>_<end>.csv that covers the needed period."""
+    import glob, re
+    best = None
+    for c in sorted(glob.glob(os.path.join(OBS_DIR, f"{prefix}_*.csv"))):
+        m = re.search(r"_(\d{8}T\d{2})_(\d{8}T\d{2})\.csv$", c)
+        if not m:
+            continue
+        a, b = (dt.datetime.strptime(x, "%Y%m%dT%H") for x in m.groups())
+        if a <= T_NEED0 and b >= T_END:
+            if best is None or os.path.getsize(c) < os.path.getsize(best):
+                best = c
+    if best is None:
+        print(f"   WARNING: no {prefix} file covers {T_NEED0:%Y-%m-%dT%H} .. {T_END:%Y-%m-%dT%H}")
+        c = sorted(glob.glob(os.path.join(OBS_DIR, f"{prefix}_*.csv")))
+        best = c[0] if c else None
+    return best
 os.makedirs(OUT, exist_ok=True)
 PARAMS = os.path.join(PROJ, "data", "params",
                       "GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - "
@@ -233,6 +261,14 @@ hits = np.where(DATETIMES == T0)[0]
 if len(hits) != 1:
     raise SystemExit(f"t0 {T0} not found in data times {DATETIMES[0]} ... {DATETIMES[-1]}")
 I0 = int(hits[0])                 # index of t0
+if args.long_nud and I0 < args.long_nud // 6 + 1:
+    _t_l = dt.datetime.fromisoformat(args.t0) - dt.timedelta(hours=args.long_nud)
+    raise SystemExit(
+        f"--long-nud {args.long_nud} needs ERA5 from t0-{args.long_nud + 6}h, but the file starts at {DATETIMES[0]}.\n"
+        f"Download on the login node:\n"
+        f"  python scripts/download_era5_cloud.py --date {_t_l:%Y-%m-%d} --time {_t_l:%H:%M} --steps {args.long_nud // 6 + args.steps}\n"
+        f"  python scripts/download_isd_lite.py --start {(_t_l - dt.timedelta(hours=6)).replace(hour=0):%Y-%m-%dT%H} --end {T_END:%Y-%m-%dT%H}\n"
+        f"  python scripts/download_uscrn_range.py --start {(_t_l - dt.timedelta(hours=6)).replace(hour=0):%Y-%m-%dT%H} --end {T_END:%Y-%m-%dT%H}")
 if I0 < 5:
     raise SystemExit("Data must start at t0-30h (need 5 frames before t0).")
 if I0 + args.steps >= len(DATETIMES):
@@ -381,7 +417,9 @@ def load_merra2_t2m(times):
     return out
 
 
-OBS_TIMES = [pd.Timestamp(DATETIMES[i]) for i in OBS_IDX]
+LONG_IDX = list(range(I0 - args.long_nud // 6 + 1, I0 + 1)) if args.long_nud else []
+OBS_LOAD_IDX = sorted(set(OBS_IDX) | set(LONG_IDX))
+OBS_TIMES = [pd.Timestamp(DATETIMES[i]) for i in OBS_LOAD_IDX]
 M2FIELD = None
 if args.obs_source == "era5-synth":
     cand = np.argwhere(CONUS_LAND)
@@ -401,7 +439,7 @@ elif args.obs_source in ("merra2", "merra2-field"):
             for t in OBS_TIMES]
     OBSDF = pd.concat(rows, ignore_index=True)
     if args.obs_source == "merra2-field":
-        M2FIELD = {i: M2[t] for i, t in zip(OBS_IDX, OBS_TIMES)}
+        M2FIELD = {i: M2[t] for i, t in zip(OBS_LOAD_IDX, OBS_TIMES)}
 else:
     path = args.obs_file or _default_csv("isd_lite" if args.obs_source == "isd" else "uscrn")
     if not path or not os.path.exists(path):
@@ -767,6 +805,31 @@ def nudge_chain(kind, alpha, window_h=24):
         raise ValueError(f"Unsupported nudging window: {window_h}h (supported: 6, 12, 24)")
 
 
+def long_nudge_chain(kind, alpha, hours):
+    """Operational-style spin-up: cold start from ERA5 at t0-(hours+6)h / t0-hours, then 6-hourly
+    GraphCast steps with a nudging increment from that time's stations after every step, up to t0.
+    alpha = 0 gives the free-running control (a `hours`-long GraphCast forecast)."""
+    n = hours // 6
+    A, B = era5_frame(I0 - n - 1), era5_frame(I0 - n)
+    for idx in range(I0 - n + 1, I0 + 1):
+        C = pred_frame(forecast(A, B, idx - 2, 1), 0)
+        if alpha > 0:
+            C = apply_increment(C, oi_increment(C["2m_temperature"], idx, f"nud{hours}-{kind}"), kind, scale=alpha)
+        A, B = B, C
+    return A, B
+
+
+if args.long_nud:
+    if args.base != "bg" or M2FIELD is not None:
+        print("NOTE: --long-nud applies to --base bg with station/OI sources only; skipped")
+    else:
+        t_ = time.time()
+        ARMS[f"FREE{args.long_nud}"] = long_nudge_chain("DIR", 0.0, args.long_nud)
+        for k in [x.strip() for x in args.long_nud_types.split(",") if x.strip()]:
+            ARMS[f"NUD{args.long_nud}-{k}"] = long_nudge_chain(k, ALPHA, args.long_nud)
+        print(f"   long nudging {args.long_nud} h ({args.long_nud // 6} cycles, alpha={ALPHA:.2f}) "
+              f"+ FREE{args.long_nud} control: {time.time()-t_:.1f} s")
+
 WINDOWS = [int(w.strip()) for w in args.nud_windows.split(",") if w.strip()]
 for w in WINDOWS:
     for k in [x.strip() for x in args.nud_types.split(",") if x.strip()]:
@@ -941,8 +1004,9 @@ COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d6
        "NUD24-DIR": "#e377c2", "NUD24-BAL": "#2ca02c", "NUD24-FIX": "#9467bd",
        "BIAS": "#7f7f7f", "COL-PBL": "#bcbd22", "BAL-PBL": "#8c564b", "IAU-DIR": "#ff9896", "IAU-PBL": "#c49c94",
        "IAU-BAL-PBL": "#9edae5", "NUD-BAL-PBL": "#006d2c", "NUD6-BAL-PBL": "#31a354", "NUD12-BAL-PBL": "#74c476",
-       "NUD24-BAL-PBL": "#006d2c", "NUD6-PBL": "#a1d99b", "NUD24-PBL": "#41ab5d"}
-STY = {"ERA5": "--", "BASE": "--"}
+       "NUD24-BAL-PBL": "#006d2c", "NUD6-PBL": "#a1d99b", "NUD24-PBL": "#41ab5d",
+       "NUD72-BAL": "#00441b", "NUD72-BAL-PBL": "#00441b", "NUD72-DIR": "#c51b7d", "FREE72": "#525252"}
+STY = {"ERA5": "--", "BASE": "--", "FREE72": ":", "FREE48": ":", "FREE120": ":"}
 EXT = [230, 300, 20, 55]
 
 
