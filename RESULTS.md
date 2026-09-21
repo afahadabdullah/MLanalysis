@@ -1143,3 +1143,17 @@ Rerun with `--fdv-solver lbfgs --fdv-iter 60 --fdv-restarts 3` (`runs/exp_main/2
 - The restart made no further progress, and every forecast table is **bit-identical** to the v3 run. The gradient fell by 4 orders of magnitude, so **L-BFGS reached the true minimum**. The "FACTR*EPSMCH" message was a normal stop, not a float32 stall. The Gauss-Newton solver is not needed for this case.
 - **The partial fit (Jo ≈ 1.6–2 × N_obs/2) is set by the error settings.** Desroziers says the true station error is about **2× the assumed σo = 1.12 K, i.e. ≈ 2.0–2.4 K**. Innovation χ² ≈ 4.4–5.5 ≈ ratio² (3.6–4.6) + HBHᵀ/R (≈ 0.8–1). So the background error is about right and the **observation (representativeness) error is underestimated**: a 1° cell cannot represent point stations in stable winter PBLs.
 - **Implication:** the same σo is used by the OI in DIR/HYB-DIR, so those arms over-weight the stations too. Next tests: `--fdv-sigo-scale 2.0` (4D-Var only) and `--sigma-repr 2.0` (all arms, σo ≈ 2.06 K, consistent).
+
+### 27.5 Obs-error test: doubling σo for 4D-Var makes forecasts worse (so20 run)
+Same as lbfgs2 but `--fdv-sigo-scale 2.0` (`runs/exp_main/20180115T12_isd_bg_4dv_so20`). 2 m T error reduction vs BASE on withheld stations (%):
+
+| arm | 6 h | 12 h | 24 h | 48 h | 72 h |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 4DV, σo × 1 | 4.7 | 5.0 | 1.9 | 2.3 | 2.5 |
+| 4DV, σo × 2 | 2.7 | 3.1 | 1.3 | 0.6 | 1.2 |
+| HYB72-4DV, σo × 1 | 13.2 | 10.7 | 6.3 | 8.1 | 6.7 |
+| HYB72-4DV, σo × 2 | 13.2 | 10.2 | 6.1 | 8.1 | 6.1 |
+
+- With half the station weight, 4DV loses about half its gain at every lead. HYB72-4DV is unchanged to slightly worse (USCRN 12 h: −4.0 → −0.6 %). HYB72-4DV moves closer to ERA5 on the grid (t0 CONUS error 0.452 → 0.358 K) but further from the stations. **The stations add real information that ERA5 lacks; down-weighting them throws it away.**
+- **§27.4 was wrong about the cause.** A single-case Desroziers estimate assumes B has the right structure. If B cannot represent what the stations see, the analysis cannot fit them, (y−Hxa)·(y−Hxb) stays large, and the method reports it as a large σo. Here the forecast test says the fit is limited by **B (too small or wrong structure)**, not by R.
+- Decision: keep σo = 1.12 K (`--sigma-repr 1.0`); skip the `--sigma-repr 2.0` run. Next, test a larger or longer-range B (`--fdv-sig` × 2, `--fdv-L`).
