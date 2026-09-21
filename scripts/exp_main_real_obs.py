@@ -139,6 +139,27 @@ ap.add_argument("--long-nud-types", default="BAL", help="Increment type(s) for t
 ap.add_argument("--hyb-tau", type=float, default=6.0,
                 help="Hybrid cycling: relaxation time (h) of the FULL state toward ERA5 at every 6 h cycle "
                      "(provider-analysis stand-in); 0 disables the hybrid arms")
+ap.add_argument("--hyb-variants", default="base",
+                help="Comma list of hybrid-cycle variants; each is '+'-joined options: "
+                     "base | LS (level-selective replay) | BC (station bias correction) | "
+                     "W=<const|ramp-up|ramp-down|tri|lanczos> (weighted 4DIAU over the cycles). "
+                     "e.g. 'base,LS,BC,W=ramp-up,LS+BC'")
+ap.add_argument("--hyb-sfc-tau", type=float, default=24.0,
+                help="LS: relaxation time (h) toward ERA5 for surface fields and levels >= --hyb-bl-top")
+ap.add_argument("--hyb-bl-top", type=int, default=850, help="LS: levels at/below this pressure (hPa) use --hyb-sfc-tau")
+ap.add_argument("--bias-mode", default="station-hour", choices=["station", "station-hour"],
+                help="BC: bias per station, or per station and UTC hour")
+ap.add_argument("--bias-gamma", type=float, default=0.2, help="BC: update weight per cycle (EW average)")
+ap.add_argument("--jac-k", type=int, default=8, help="JAC: random surface perturbations for the model-Jacobian balance")
+ap.add_argument("--jac-smooth-km", type=float, default=500.0, help="JAC: local-regression smoothing length (km)")
+ap.add_argument("--fdv-iter", type=int, default=20, help="4DV: L-BFGS iterations")
+ap.add_argument("--fdv-L", type=float, default=300.0, help="4DV: background-error correlation length (km)")
+ap.add_argument("--fdv-sig", default="2m_temperature=1.5,temperature=1.0,specific_humidity=0.0005,"
+                                    "u_component_of_wind=1.5,v_component_of_wind=1.5,geopotential=50",
+                help="4DV: background-error std per control variable (K, kg/kg, m/s, m2/s2)")
+ap.add_argument("--fdv-era5-weight", type=float, default=1.0,
+                help="HYB-4DV: weight of the ERA5 anchor term at t0 (0 = off)")
+ap.add_argument("--grad-selftest", type=int, default=1, help="Check the differentiable step vs the forward model")
 ap.add_argument("--hyb-types", default="DIR,BAL-PBL",
                 help="Station increment type(s) added on top of the ERA5-relaxed state in the hybrid arms")
 ap.add_argument("--nud-obs", default="all", choices=["all", "last2"],
@@ -148,13 +169,12 @@ ap.add_argument("--proj", default=os.environ.get("PROJ", "/home/afahad/project/M
 ap.add_argument("--outdir", default=None)
 ap.add_argument("--dpi", type=int, default=150)
 ap.add_argument("--skip-checks", action="store_true", help="Skip determinism/consistency checks")
-ap.add_argument("--model", default="small", choices=["small", "large", "operational"],
+ap.add_argument("--model", default="small", choices=["small", "large"],
                 help="small = GraphCast_small (1 deg, 13 levels, ERA5 1979-2015); "
-                     "large = GraphCast (0.25 deg, 37 levels, needs >=40GB GPU); "
-                     "operational = GraphCast_operational (0.25 deg, 13 levels, fits in 32GB V100)")
+                     "large = GraphCast (0.25 deg, 37 levels, ERA5 1979-2017)")
 ap.add_argument("--params", default=None, help="Explicit checkpoint .npz path (overrides --model)")
 ap.add_argument("--lite", type=int, default=None,
-                help="Keep only 2 m T, T850, Z500 from forecasts to save memory (default: on for 0.25 deg models)")
+                help="Keep only 2 m T, T850, Z500 from forecasts to save memory (default: on for --model large)")
 args = ap.parse_args()
 
 MODEL_SPEC = {
@@ -164,11 +184,9 @@ MODEL_SPEC = {
     "large": dict(res="0.25", nlev=37, tag="_r025",
                   ckpt="GraphCast - ERA5 1979-2017 - resolution 0.25 - pressure levels 37 - "
                        "mesh 2to6 - precipitation input and output.npz"),
-    "operational": dict(res="0.25", nlev=13, tag="_r025_oper",
-                        ckpt="GraphCast_operational.npz"),
 }[args.model]
 if args.lite is None:
-    args.lite = 1 if args.model in ("large", "operational") else 0
+    args.lite = 1 if args.model == "large" else 0
 WANT = None if args.arms == "all" else ({"ERA5", "BASE"} | {a.strip() for a in args.arms.split(",")})
 
 
@@ -188,14 +206,9 @@ if args.data:
 else:
     _t_l = dt.datetime.fromisoformat(args.t0) - dt.timedelta(hours=LEAD_BACK_H)
     _stem = f"res-{MODEL_SPEC['res']}_levels-{MODEL_SPEC['nlev']}"
-    _ext = ".zarr" if args.model in ("large", "operational") else ".nc"
+    _ext = ".zarr" if args.model == "large" else ".nc"
     DATA = os.path.join(PROJ, "data", "era5",
                         f"source-era5_date-{_t_l:%Y-%m-%d}_{_stem}_steps-{LEAD_BACK_H // 6 + 12:02d}{_ext}")
-    if args.model == "operational" and not os.path.exists(DATA):
-        _alt = os.path.join(PROJ, "data", "era5",
-                            f"source-era5_date-{_t_l:%Y-%m-%d}_res-0.25_levels-37_steps-{LEAD_BACK_H // 6 + 12:02d}.zarr")
-        if os.path.exists(_alt):
-            DATA = _alt
     if not os.path.exists(DATA) and not args.long_nud:     # fall back to the standard 24 h-window file
         DATA = os.path.join(PROJ, "data", "era5",
                             f"source-era5_date-{t_launch:%Y-%m-%d}_{_stem}_steps-16{_ext}")
@@ -255,21 +268,14 @@ print(f"t0 = {args.t0}   steps = {args.steps} ({args.steps*6} h)   data = {DATA}
 print(f"base = {args.base}   obs = {args.obs_source} (sigma_o = {SIGMA_O} K)   out = {OUT}")
 
 # =============================================================================
-print(f"\n[1] Loading GraphCast ({args.model}: {os.path.basename(PARAMS)}) and normalization stats ...")
+# 1. Model
+# =============================================================================
+print("\n[1] Loading GraphCast_small checkpoint and normalization stats ...")
 with open(PARAMS, "rb") as f:
     ckpt = checkpoint.load(f, graphcast.CheckPoint)
 params, model_config, task_config = ckpt.params, ckpt.model_config, ckpt.task_config
-TARGET_13 = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
-stats_stem = "_025" if args.model in ("large", "operational") else ""
-stats = {}
-for n in ["diffs_stddev_by_level", "mean_by_level", "stddev_by_level"]:
-    p = os.path.join(STATS, f"{n}{stats_stem}.nc")
-    if not os.path.exists(p):
-        p = os.path.join(STATS, f"{n}.nc")
-    ds_s = xr.load_dataset(p).compute()
-    if MODEL_SPEC["nlev"] == 13 and "level" in ds_s and len(ds_s["level"]) > 13 and args.model == "operational":
-        ds_s = ds_s.sel(level=TARGET_13)
-    stats[n] = ds_s
+stats = {n: xr.load_dataset(os.path.join(STATS, f"{n}.nc")).compute()
+         for n in ["diffs_stddev_by_level", "mean_by_level", "stddev_by_level"]}
 
 
 def _wrapped(m_cfg, t_cfg):
@@ -292,6 +298,23 @@ _jit = jax.jit(functools.partial(
 def _run(rng, inputs, targets_template, forcings):
     return _jit(rng=rng, inputs=inputs, targets_template=targets_template, forcings=forcings)[0]
 
+
+def _wrapped32(m_cfg, t_cfg):
+    """Same predictor without the bfloat16 cast: used only for gradients / tangent-linear runs."""
+    p = graphcast.GraphCast(m_cfg, t_cfg)
+    p = normalization.InputsAndResiduals(p, **stats)
+    return autoregressive.Predictor(p, gradient_checkpointing=True)
+
+
+@hk.transform_with_state
+def _fwd32(m_cfg, t_cfg, inputs, targets_template, forcings):
+    return _wrapped32(m_cfg, t_cfg)(inputs, targets_template=targets_template, forcings=forcings)
+
+
+_jit32 = jax.jit(functools.partial(
+    functools.partial(_fwd32.apply, m_cfg=model_config, t_cfg=task_config),
+    params=params, state={}))
+
 # =============================================================================
 # 2. Data, time indexing, masks
 # =============================================================================
@@ -307,8 +330,6 @@ else:
         DS = xr.load_dataset(DATA, decode_timedelta=True).compute()
     except Exception:
         DS = xr.load_dataset(DATA).compute()
-if MODEL_SPEC["nlev"] == 13 and "level" in DS and len(DS["level"]) > 13 and args.model == "operational":
-    DS = DS.sel(level=TARGET_13)
 print(f"   model = {args.model} ({os.path.basename(PARAMS)}), lite forecasts = {bool(args.lite)}")
 
 DATETIMES = DS.coords["datetime"].values
@@ -601,7 +622,7 @@ def obs_at(idx, which="use"):
     return d
 
 
-def oi_increment(bg2t, idx, tag=""):
+def oi_increment(bg2t, idx, tag="", bias=None):
     """2 m T increment from the observations valid at frame idx."""
     if M2FIELD is not None:                                  # direct field replacement
         inc = np.where(CONUS_LAND, M2FIELD[idx] - bg2t, 0.0)
@@ -612,7 +633,7 @@ def oi_increment(bg2t, idx, tag=""):
     d = obs_at(idx)
     if d.empty:
         return np.zeros_like(bg2t)
-    la, lo, innov, so2k, sb2, qc = qc_innovations(bg2t, d)
+    la, lo, innov, so2k, sb2, qc = qc_innovations(bg2t, d, bias=bias, hour=pd.Timestamp(DATETIMES[idx]).hour)
     if len(innov) == 0:
         return np.zeros_like(bg2t)
     Coo = np.exp(-0.5 * (gc_dist(la[:, None], lo[:, None], la[None], lo[None]) / args.oi_L) ** 2)
@@ -627,20 +648,30 @@ def oi_increment(bg2t, idx, tag=""):
     return inc.astype(np.float32)
 
 
-def qc_innovations(bg2t, d):
+def qc_innovations(bg2t, d, bias=None, hour=0):
     """ECMWF-style QC + 1-deg super-obs. Returns lat, lon, innovation, obs-error variance per
-    super-ob, background-error variance estimate, and QC counts."""
+    super-ob, background-error variance estimate, and QC counts.
+    bias: optional dict (station bias state, VarBC-lite); the current estimate is subtracted from
+    each observation before QC and updated afterwards with weight --bias-gamma."""
     la, lo, y = d.lat.values, d.lon.values, d.y.values
-    innov = y - interp2(bg2t, la, lo)
+    sids = d.sid.values
+    keys = [(s_, hour) if args.bias_mode == "station-hour" else s_ for s_ in sids]
+    b_now = np.array([bias.get(k, 0.0) for k in keys]) if bias is not None else np.zeros(len(y))
+    innov = y - b_now - interp2(bg2t, la, lo)
     n_in = len(innov)
     keep = np.abs(innov) <= args.gross                       # gross check
     la, lo, innov = la[keep], lo[keep], innov[keep]
+    keys = [k for k, kk in zip(keys, keep) if kk]; b_now = b_now[keep]
     n_gross = n_in - len(innov)
     so2_single = SIGMA_O ** 2
     sb2 = max(float(np.var(innov)) - so2_single, 0.05) if len(innov) > 1 else 1.0
     keep = np.abs(innov) <= args.bgcheck * np.sqrt(sb2 + so2_single)   # background check
     la, lo, innov = la[keep], lo[keep], innov[keep]
+    keys = [k for k, kk in zip(keys, keep) if kk]; b_now = b_now[keep]
     n_bg = int((~keep).sum())
+    if bias is not None:                                     # update after using the current estimate
+        for k, bn, dv in zip(keys, b_now, innov):
+            bias[k] = float(bn + args.bias_gamma * dv)
     n_per = np.ones(len(innov))
     if args.superob and len(innov):
         ci = np.round((la - LATS[0]) / (LATS[1] - LATS[0])).astype(int)
@@ -737,6 +768,7 @@ def hypsometric_phi(dT_by_level):
 
 
 FIXW = dict(zip((1000, 925, 850), [float(x) for x in args.fix_weights.split(",")]))
+JAC_B = None   # model-Jacobian balance coefficients {(var, level_index or None): field}
 KAPPA = 0.2857
 
 
@@ -790,6 +822,14 @@ def apply_increment(frame, inc2t, kind, scale=1.0):
         if kind == "BAL-PBL" and dT:
             for p, v in hypsometric_phi(dT).items():
                 f["geopotential"][LIDX[p]] += v
+    if kind == "JAC":
+        if JAC_B is None:
+            raise RuntimeError("JAC balance not computed")
+        for (v, li), coef in JAC_B.items():
+            if li is None:
+                f[v] += coef * inc
+            else:
+                f[v][li] += coef * inc
     if kind in ("COL", "BAL", "REG"):
         dT = {p: BT[p] * inc for p in LEVELS if BT[p] != 0.0}
         for p, v in dT.items():
@@ -895,6 +935,69 @@ def nudge_chain(kind, alpha, window_h=24):
         raise ValueError(f"Unsupported nudging window: {window_h}h (supported: 6, 12, 24)")
 
 
+def iau_weights(profile, n):
+    """Weights (max 1) of the increments over n cycles (oldest first): weighted-4DIAU analogue."""
+    k = np.arange(1, n + 1, dtype=float)
+    if profile == "const":
+        w = np.ones(n)
+    elif profile == "ramp-up":
+        w = k / n
+    elif profile == "ramp-down":
+        w = (n - k + 1) / n
+    elif profile == "tri":
+        w = 1.0 - np.abs((k - 0.5) / n * 2.0 - 1.0)
+    elif profile == "lanczos":                     # Lanczos-windowed low-pass weights, centred
+        x = (k - (n + 1) / 2) / ((n + 1) / 2)
+        w = np.sinc(x) * np.sinc(x) + 1e-3
+    else:
+        raise ValueError(profile)
+    return w / w.max()
+
+
+def relax_to_era5(C, E, a_upper, a_sfc=None):
+    """Full-state relaxation toward ERA5; with a_sfc, surface fields and levels >= --hyb-bl-top use a_sfc."""
+    out = {}
+    for v in STATE_VARS:
+        a = np.full(C[v].shape[:1] if C[v].ndim == 3 else (), a_upper, dtype=np.float32)
+        if a_sfc is not None:
+            if C[v].ndim == 3:
+                a = np.array([a_sfc if p >= args.hyb_bl_top else a_upper for p in LEVELS], dtype=np.float32)
+            elif v in ("2m_temperature", "10m_u_component_of_wind", "10m_v_component_of_wind"):
+                a = np.float32(a_sfc)
+        if C[v].ndim == 3:
+            a = a[:, None, None]
+        out[v] = (C[v] + a * (E[v] - C[v])).astype(np.float32)
+    return out
+
+
+def hybrid_chain(kind, hours, a_era5, alpha_obs, weights="const", ls=False, bc=False,
+                 end_idx=None, last_obs=True, tag=None):
+    """Generalized hybrid cycling (see long_nudge_chain) with weighted-4DIAU cycle weights,
+    level-selective replay (ls) and station bias correction (bc). Runs from t0-(hours+6)h up to
+    frame end_idx (default t0). last_obs=False skips the station increment at end_idx."""
+    end_idx = I0 if end_idx is None else end_idx
+    n = hours // 6
+    w = iau_weights(weights, n)
+    a_sfc = (1.0 - np.exp(-6.0 / args.hyb_sfc_tau)) if ls else None
+    bias = {} if bc else None
+    A, B = era5_frame(I0 - n - 1), era5_frame(I0 - n)
+    for j, idx in enumerate(range(I0 - n + 1, end_idx + 1)):
+        C = pred_frame(forecast(A, B, idx - 2, 1), 0)
+        if a_era5 > 0:
+            C = relax_to_era5(C, era5_frame(idx), w[j] * a_era5, None if a_sfc is None else w[j] * a_sfc)
+        if alpha_obs > 0 and (last_obs or idx != end_idx):
+            C = apply_increment(C, oi_increment(C["2m_temperature"], idx, tag or f"hyb-{kind}", bias=bias),
+                                kind, scale=w[j] * alpha_obs)
+        A, B = B, C
+    if bias:
+        BIAS_LOG[tag or kind] = dict(n_keys=len(bias), mean=float(np.mean(list(bias.values()))),
+                                     rms=float(np.sqrt(np.mean(np.square(list(bias.values()))))))
+    return A, B
+
+
+BIAS_LOG = {}
+
+
 def long_nudge_chain(kind, alpha, hours, era5_alpha=0.0, tag=None):
     """Operational-style cycling: cold start from ERA5 at t0-(hours+6)h / t0-hours, then 6-hourly
     GraphCast steps up to t0. After every step:
@@ -937,7 +1040,7 @@ if args.long_nud:
             A_E = 1.0 - np.exp(-6.0 / args.hyb_tau)
             if want(f"REPLAY{H}"):
                 ARMS[f"REPLAY{H}"] = long_nudge_chain("DIR", 0.0, H, era5_alpha=A_E)
-            for k in [x.strip() for x in args.hyb_types.split(",") if x.strip()]:
+            for k in [x.strip() for x in args.hyb_types.split(",") if x.strip() and x.strip() not in ("JAC", "4DV")]:
                 if want(f"HYB{H}-{k}"):
                     ARMS[f"HYB{H}-{k}"] = long_nudge_chain(k, ALPHA, H, era5_alpha=A_E, tag=f"hyb{H}-{k}")
             print(f"   hybrid cycling {H} h: full state relaxed to ERA5 (alpha_ERA5={A_E:.2f}, tau={args.hyb_tau} h) "
@@ -952,6 +1055,303 @@ for w in WINDOWS:
             continue
         ARMS[arm_key] = nudge_chain(k, ALPHA, window_h=w)
         print(f"   {arm_key}: window={w}h, alpha={ALPHA:.2f} (tau={args.nud_tau} h), obs={args.nud_obs}, {time.time()-t_:.1f} s")
+
+# =============================================================================
+# 6b. ML-specific methods: differentiable GraphCast step, model-Jacobian balance (JAC),
+#     two-frame strong-constraint 4D-Var (4DV)
+# =============================================================================
+H_ = args.long_nud
+HYB_VARIANTS = [v.strip() for v in args.hyb_variants.split(",") if v.strip()]
+HYB_KINDS = [x.strip() for x in args.hyb_types.split(",") if x.strip()]
+_need_jac = any(k == "JAC" for k in HYB_KINDS) or want("JAC-2F") or (WANT is not None and any("JAC" in a for a in WANT))
+_need_4dv = want("4DV") or (H_ and want(f"HYB{H_}-4DV")) or (WANT is not None and any("4DV" in a for a in WANT))
+if WANT is None:        # with --arms all, only build the gradient arms when explicitly listed in --hyb-types
+    _need_jac = "JAC" in HYB_KINDS
+    _need_4dv = "4DV" in HYB_KINDS
+GRAD_CHECKS = {}
+
+if _need_jac or _need_4dv:
+    import jax.numpy as jnp
+    import scipy.ndimage as ndi
+    from scipy.optimize import minimize
+    try:
+        from graphcast import xarray_jax as XJ
+    except ImportError:
+        try:
+            from weathernext.utils import xarray_jax as XJ
+        except ImportError:
+            import xarray_jax as XJ
+
+    def make_step(start):
+        """Differentiable one-step map (A, B) -> C on dicts of jnp arrays in REST order.
+        Inputs are frames start, start+1; output is frame start+2. Float32 predictor."""
+        if os.environ.get("MLDA_FAKE_STEP"):                   # test harness only
+            return _fake_step
+        inp_t, tgt_t, frc = window(start, 1)
+        tgt_nan = tgt_t * np.nan
+        perm = {v: [(["batch", "time"] + REST[v]).index(d) for d in inp_t[v].dims] for v in STATE_VARS}
+
+        def step(A, B):
+            new = {}
+            for v in STATE_VARS:
+                arr = jnp.stack([jnp.asarray(A[v], jnp.float32), jnp.asarray(B[v], jnp.float32)])[None]
+                arr = jnp.transpose(arr, perm[v])
+                new[v] = XJ.DataArray(arr, dims=inp_t[v].dims,
+                                      coords={c: inp_t[v].coords[c] for c in inp_t[v].coords})
+            inp = inp_t.assign(new)
+            out = _jit32(rng=jax.random.PRNGKey(0), inputs=inp, targets_template=tgt_nan, forcings=frc)[0]
+            C = {}
+            for v in STATE_VARS:
+                a = XJ.unwrap_data(out[v])
+                dims = list(out[v].dims)
+                a = a[tuple(0 if d in ("batch", "time") else slice(None) for d in dims)]
+                rest = [d for d in dims if d not in ("batch", "time")]
+                C[v] = jnp.transpose(a, [rest.index(d) for d in REST[v]])
+            return C
+        return step
+
+    def _fake_step(A, B):                                     # mirrors the stub rollout (tests only)
+        C = {}
+        for v in STATE_VARS:
+            nxt = B[v] + 0.3 * (B[v] - A[v])
+            nxt = 0.9 * nxt + 0.1 * jnp.roll(nxt, 1, axis=-1)
+            nxt = 0.96 * nxt + 0.04 * (jnp.roll(nxt, 1, -2) + jnp.roll(nxt, -1, -2)) / 2
+            C[v] = nxt
+        l1000 = LIDX[1000]
+        C["temperature"] = C["temperature"].at[l1000].add(0.1 * (B["2m_temperature"] - B["temperature"][l1000]))
+        return C
+
+    def _to_np(d):
+        return {v: np.asarray(a, dtype=np.float32) for v, a in d.items()}
+
+    def grad_selftest(A, B, start):
+        """(1) differentiable step vs the operational forward step; (2) JVP vs finite difference."""
+        step = make_step(start)
+        C_diff = _to_np(step(A, B))
+        C_fwd = pred_frame(forecast(A, B, start, 1), 0)
+        GRAD_CHECKS["step32_vs_fwd_bf16_conus_rms_2t_K"] = wrms(C_diff["2m_temperature"] - C_fwd["2m_temperature"], CONUS_LAND)
+        v = np.zeros_like(A["2m_temperature"]); v[CONUS_LAND] = 1.0
+        tA = {k: jnp.zeros_like(jnp.asarray(a)) for k, a in A.items()}; tB = dict(tA)
+        tA["2m_temperature"] = jnp.asarray(v); tB["2m_temperature"] = jnp.asarray(v)
+        _, jv = jax.jvp(step, (_jnp(A), _jnp(B)), (tA, tB))
+        eps = 0.1
+        Ap = copy_frame(A); Bp = copy_frame(B)
+        Ap["2m_temperature"] = Ap["2m_temperature"] + eps * v; Bp["2m_temperature"] = Bp["2m_temperature"] + eps * v
+        Cp = _to_np(step(Ap, Bp))
+        fd = (Cp["temperature"][LIDX[925]] - C_diff["temperature"][LIDX[925]]) / eps
+        tl = np.asarray(jv["temperature"][LIDX[925]])
+        num = wrms(fd - tl, CONUS_LAND); den = max(wrms(fd, CONUS_LAND), 1e-9)
+        GRAD_CHECKS["jvp_vs_fd_T925_rel_err"] = num / den
+        GRAD_CHECKS["jvp_T925_response_rms_per_K"] = wrms(tl, CONUS_LAND)
+        print("   gradient self-test:", {k: round(v_, 4) for k, v_ in GRAD_CHECKS.items()})
+        if GRAD_CHECKS["jvp_vs_fd_T925_rel_err"] > 0.2:
+            print("   WARNING: JVP and finite difference disagree by >20 % — check the xarray_jax wrapping.")
+
+    def _jnp(d):
+        return {k: jnp.asarray(a, jnp.float32) for k, a in d.items()}
+
+    SIG_PTS = (args.jac_smooth_km / 111.0 / (LATS[1] - LATS[0]),
+               args.jac_smooth_km / (111.0 * np.cos(np.deg2rad(40.0))) / (LONS[1] - LONS[0]))
+
+    def smooth(f):
+        return ndi.gaussian_filter(f, sigma=SIG_PTS, mode=("nearest", "wrap"))
+
+    JAC_CLIP = {"temperature": 2.0, "specific_humidity": 2e-3, "u_component_of_wind": 5.0,
+                "v_component_of_wind": 5.0, "geopotential": 200.0, "mean_sea_level_pressure": 300.0,
+                "10m_u_component_of_wind": 5.0, "10m_v_component_of_wind": 5.0}   # per K of 2 m T
+
+    def compute_jac_balance(A, B, start, K):
+        """Model-Jacobian balance: regress the tangent-linear 6 h response of every variable/level
+        on the response of 2 m T, for K random smooth 2 m T perturbations over the OI box (both
+        input frames). Local regression (smoothed moments) gives spatially varying coefficients."""
+        step = make_step(start)
+        rng = np.random.default_rng(args.seed + 7)
+        Aj, Bj = _jnp(A), _jnp(B)
+        targets = [("2m_temperature", None), ("10m_u_component_of_wind", None), ("10m_v_component_of_wind", None),
+                   ("mean_sea_level_pressure", None)]
+        for v in ("temperature", "specific_humidity", "u_component_of_wind", "v_component_of_wind", "geopotential"):
+            targets += [(v, LIDX[p]) for p in LEVELS if p >= args.col_top]
+        num = {t: 0.0 for t in targets}; den = 0.0
+        for k in range(K):
+            pert = smooth(rng.normal(size=A["2m_temperature"].shape)) * OI_BOX
+            pert = (pert / (pert[OI_BOX].std() + 1e-12)).astype(np.float32)
+            tA = {x: jnp.zeros_like(a) for x, a in Aj.items()}; tB = dict(tA)
+            tA["2m_temperature"] = jnp.asarray(pert); tB["2m_temperature"] = jnp.asarray(pert)
+            _, jv = jax.jvp(step, (Aj, Bj), (tA, tB))
+            r2 = np.asarray(jv["2m_temperature"])
+            den = den + r2 * r2
+            for (v, li) in targets:
+                r = np.asarray(jv[v]) if li is None else np.asarray(jv[v][li])
+                num[(v, li)] = num[(v, li)] + r * r2
+        den_s = smooth(den) + 1e-6
+        out = {}
+        for (v, li) in targets:
+            if v == "2m_temperature":
+                continue
+            c = smooth(num[(v, li)]) / den_s * OI_BOX
+            lim = JAC_CLIP.get(v, None)
+            if lim is not None:
+                c = np.clip(c, -lim, lim)
+            out[(v, li)] = c.astype(np.float32)
+        prof = {LEVELS[li]: float(np.mean(out[("temperature", li)][CONUS_LAND]))
+                for (v, li) in out if v == "temperature"}
+        print("   JAC balance: mean dT(p)/dT2m over CONUS land:",
+              {p: round(c, 3) for p, c in sorted(prof.items(), reverse=True)})
+        return out, prof
+
+    # ---- 4D-Var ---------------------------------------------------------------------------
+    CTRL_SIG = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in args.fdv_sig.split(",")}
+    _rows = np.where(OI_BOX.any(axis=1))[0]; _cols = np.where(OI_BOX.any(axis=0))[0]
+    R0, R1, C0, C1 = _rows.min(), _rows.max() + 1, _cols.min(), _cols.max() + 1
+    CTRL_LEV = [LIDX[p] for p in LEVELS if p >= args.col_top]
+
+    def _gauss_kernel(sig):
+        r = int(np.ceil(3 * sig)); x = np.arange(-r, r + 1)
+        k = np.exp(-0.5 * (x / sig) ** 2); return jnp.asarray(k / k.sum(), jnp.float32)
+
+    _KY = _gauss_kernel(args.fdv_L / 111.0 / (LATS[1] - LATS[0]))
+    _KX = _gauss_kernel(args.fdv_L / (111.0 * np.cos(np.deg2rad(40.0))) / (LONS[1] - LONS[0]))
+
+    def _bsqrt(chi):
+        """B^1/2: separable Gaussian smoothing of a (..., ny, nx) control field."""
+        f = jax.vmap(lambda row: jnp.convolve(row, _KX, mode="same"), in_axes=-2, out_axes=-2)(chi) \
+            if chi.ndim == 2 else jax.vmap(lambda a: _bsqrt(a))(chi)
+        if chi.ndim == 2:
+            f = jax.vmap(lambda col: jnp.convolve(col, _KY, mode="same"), in_axes=-1, out_axes=-1)(f)
+        return f
+
+    def _interp_idx(la, lo):
+        lo = np.mod(lo, 360.0)
+        fi = (la - LATS[0]) / (LATS[1] - LATS[0]); fj = (lo - LONS[0]) / (LONS[1] - LONS[0])
+        i0 = np.clip(np.floor(fi).astype(int), 0, len(LATS) - 2); j0 = np.floor(fj).astype(int) % len(LONS)
+        wi = np.clip(fi - i0, 0, 1); wj = fj - np.floor(fj)
+        return i0, j0, (j0 + 1) % len(LONS), wi, wj
+
+    def _H(f, ii):
+        i0, j0, j1, wi, wj = ii
+        return ((1 - wi) * (1 - wj) * f[i0, j0] + (1 - wi) * wj * f[i0, j1]
+                + wi * (1 - wj) * f[i0 + 1, j0] + wi * wj * f[i0 + 1, j1])
+
+    def fourdvar(Ab, Bb, start, era5_anchor=False, tag="4dv"):
+        """Strong-constraint two-frame 4D-Var over the window [t0-12h, t0].
+        Control: increments to (x_{-12}, x_{-6}) for 2 m T and T, q, u, v, Z at levels >= --col-top,
+        in B^1/2 space (Gaussian correlation L=--fdv-L, std --fdv-sig), over the OI box.
+        Cost: 1/2|chi|^2 + obs(t0-6h) on x_{-6} + obs(t0) on F(x_{-12}, x_{-6})
+              [+ ERA5 anchor at t0 on all state variables, HYB-4DV only].
+        Returns the model-consistent launch pair (x_{-6}^a, F(x_{-12}^a, x_{-6}^a))."""
+        step = make_step(start)
+        Aj, Bj = _jnp(Ab), _jnp(Bb)
+        C_b = _to_np(step(Aj, Bj))
+        obs_terms = []
+        for idx, bg in ((start + 1, Bb["2m_temperature"]), (start + 2, C_b["2m_temperature"])):
+            d = obs_at(idx)
+            la, lo, innov, so2k, _, _ = qc_innovations(bg, d)
+            ii = _interp_idx(la, lo)
+            y = interp2(bg, la, lo) + innov
+            obs_terms.append((jnp.asarray(y, jnp.float32), jnp.asarray(so2k, jnp.float32), ii))
+        ctrl = [(v, None) for v in ("2m_temperature",) if v in CTRL_SIG] + \
+               [(v, CTRL_LEV) for v in ("temperature", "specific_humidity", "u_component_of_wind",
+                                        "v_component_of_wind", "geopotential") if v in CTRL_SIG]
+        shapes = []
+        for v, lev in ctrl:
+            shapes.append((2,) + ((len(lev),) if lev else ()) + (R1 - R0, C1 - C0))
+        sizes = [int(np.prod(sh)) for sh in shapes]
+        mask_box = jnp.asarray(OI_BOX[R0:R1, C0:C1], jnp.float32)
+        E0 = _jnp(era5_frame(start + 2)) if era5_anchor else None
+
+        def unpack(z):
+            out, o = [], 0
+            for sh, n in zip(shapes, sizes):
+                out.append(z[o:o + n].reshape(sh)); o += n
+            return out
+
+        def analysed(z):
+            A, B = dict(Aj), dict(Bj)
+            for (v, lev), chi in zip(ctrl, unpack(z)):
+                sig = CTRL_SIG[v]
+                for f, X in ((0, A), (1, B)):
+                    c = chi[f]
+                    inc = (_bsqrt(c) if lev is None else jax.vmap(_bsqrt)(c)) * sig * mask_box
+                    if lev is None:
+                        X[v] = X[v].at[R0:R1, C0:C1].add(inc)
+                    else:
+                        X[v] = X[v].at[jnp.asarray(lev), R0:R1, C0:C1].add(inc)
+            return A, B
+
+        def cost(z):
+            A, B = analysed(z)
+            C = step(A, B)
+            J = 0.5 * jnp.sum(z * z)
+            for (y, so2, ii), fld in zip(obs_terms, (B["2m_temperature"], C["2m_temperature"])):
+                J = J + 0.5 * jnp.sum((_H(fld, ii) - y) ** 2 / so2)
+            if E0 is not None and args.fdv_era5_weight > 0:     # ERA5 anchor at t0 over the control region
+                for v, lev in ctrl:
+                    sig = CTRL_SIG[v]
+                    if lev is None:
+                        dv = C[v][R0:R1, C0:C1] - E0[v][R0:R1, C0:C1]
+                    else:
+                        dv = C[v][jnp.asarray(lev), R0:R1, C0:C1] - E0[v][jnp.asarray(lev), R0:R1, C0:C1]
+                    J = J + 0.5 * args.fdv_era5_weight * jnp.sum((dv / sig) ** 2 * mask_box)
+            return J
+
+        vg = jax.jit(jax.value_and_grad(cost))
+        z0 = np.zeros(sum(sizes), np.float32)
+        hist = []
+
+        def fun(z):
+            J, g = vg(jnp.asarray(z, jnp.float32))
+            hist.append(float(J)); return float(J), np.asarray(g, np.float64)
+
+        t_ = time.time()
+        res = minimize(fun, z0, jac=True, method="L-BFGS-B", options=dict(maxiter=args.fdv_iter))
+        A_a, B_a = analysed(jnp.asarray(res.x, jnp.float32))
+        A_a, B_a = _to_np(A_a), _to_np(B_a)
+        FDV_LOG[tag] = dict(J0=hist[0], J_final=hist[-1], n_iter=int(res.nit), n_eval=len(hist),
+                            seconds=round(time.time() - t_, 1),
+                            n_obs=[int(len(o[0])) for o in obs_terms])
+        print(f"   {tag}: J {hist[0]:.1f} -> {hist[-1]:.1f} in {res.nit} iterations ({time.time()-t_:.0f} s)")
+        C_a = pred_frame(forecast(A_a, B_a, start, 1), 0)      # launch pair with the operational forward
+        return B_a, C_a
+
+    FDV_LOG = {}
+    if not args.skip_checks and args.grad_selftest:
+        grad_selftest(BASE_A, BASE_B, I0 - 1)
+
+    if _need_jac:
+        t_ = time.time()
+        JAC_B, JAC_PROF = compute_jac_balance(BASE_A, BASE_B, I0 - 1, args.jac_k)
+        print(f"   JAC balance from {args.jac_k} tangent-linear runs: {time.time()-t_:.1f} s")
+        if want("JAC-2F"):
+            ARMS["JAC-2F"] = (apply_increment(BASE_A, INC_A, "JAC"), apply_increment(BASE_B, INC_B, "JAC"))
+    if _need_4dv and args.base == "bg" and M2FIELD is None:
+        if want("4DV"):
+            ARMS["4DV"] = fourdvar(BG_CHAIN[I0 - 2], BG_CHAIN[I0 - 1], I0 - 2, tag="4DV")
+        if H_ and want(f"HYB{H_}-4DV") and args.hyb_tau > 0:
+            A_E = 1.0 - np.exp(-6.0 / args.hyb_tau)
+            Ab, Bb = hybrid_chain("DIR", H_, A_E, ALPHA, end_idx=I0 - 1, last_obs=False, tag=f"hyb{H_}-4dvbg")
+            ARMS[f"HYB{H_}-4DV"] = fourdvar(Ab, Bb, I0 - 2, era5_anchor=True, tag=f"HYB{H_}-4DV")
+
+# hybrid-cycle variants (weighted 4DIAU, level-selective replay, bias correction; any station kind incl. JAC)
+if H_ and args.base == "bg" and M2FIELD is None and args.hyb_tau > 0:
+    A_E = 1.0 - np.exp(-6.0 / args.hyb_tau)
+    for var in HYB_VARIANTS:
+        if var == "base":
+            continue
+        opts = var.split("+")
+        wprof = next((o.split("=")[1] for o in opts if o.startswith("W=")), "const")
+        ls, bc = "LS" in opts, "BC" in opts
+        for k in HYB_KINDS:
+            if k == "4DV":
+                continue
+            name = f"HYB{H_}-{k}-{var.replace('W=', 'W')}"
+            if not want(name):
+                continue
+            t_ = time.time()
+            ARMS[name] = hybrid_chain(k, H_, A_E, ALPHA, weights=wprof, ls=ls, bc=bc, tag=name)
+            print(f"   {name}: weights={wprof}, level-selective={ls}, bias-corr={bc}: {time.time()-t_:.1f} s")
+    for k in HYB_KINDS:                               # JAC as a plain hybrid kind
+        if k == "JAC" and want(f"HYB{H_}-JAC") and JAC_B is not None:
+            ARMS[f"HYB{H_}-JAC"] = hybrid_chain("JAC", H_, A_E, ALPHA, tag=f"HYB{H_}-JAC")
 
 CHECKS = {}
 if not args.skip_checks:
@@ -1128,7 +1528,10 @@ COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d6
        "IAU-BAL-PBL": "#9edae5", "NUD-BAL-PBL": "#006d2c", "NUD6-BAL-PBL": "#31a354", "NUD12-BAL-PBL": "#74c476",
        "NUD24-BAL-PBL": "#006d2c", "NUD6-PBL": "#a1d99b", "NUD24-PBL": "#41ab5d",
        "NUD72-BAL": "#00441b", "NUD72-BAL-PBL": "#00441b", "NUD72-DIR": "#c51b7d", "FREE72": "#525252",
-       "REPLAY72": "#08519c", "HYB72-DIR": "#e6550d", "HYB72-BAL-PBL": "#a63603", "HYB72-BAL": "#fd8d3c"}
+       "REPLAY72": "#08519c", "HYB72-DIR": "#e6550d", "HYB72-BAL-PBL": "#a63603", "HYB72-BAL": "#fd8d3c",
+       "JAC-2F": "#6a3d9a", "4DV": "#b15928", "HYB72-JAC": "#cab2d6", "HYB72-4DV": "#000000",
+       "HYB72-DIR-LS": "#fdae6b", "HYB72-DIR-BC": "#fd8d3c", "HYB72-DIR-LS+BC": "#d94801",
+       "HYB72-DIR-Wramp-up": "#fdd0a2", "HYB72-DIR-Wramp-down": "#e6550d", "HYB72-DIR-Wtri": "#f16913"}
 STY = {"ERA5": "--", "BASE": "--", "FREE72": ":", "FREE48": ":", "FREE120": ":", "REPLAY72": "-."}
 EXT = [230, 300, 20, 55]
 
@@ -1317,7 +1720,8 @@ summ = dict(t0=args.t0, steps=args.steps, data=DATA, base=args.base, obs_source=
             regression={"b_T": BT, "R2_T": R2T, "b_Z": BZ, "R2_Z": R2Z}, oi_log=OI_LOG, checks=CHECKS,
             qc=dict(lapse_K_per_km=args.lapse, dz_below=args.dz_below, dz_above=args.dz_above, gross_K=args.gross,
                     bgcheck=args.bgcheck, sigma_inst=args.sigma_inst, sigma_repr=args.sigma_repr),
-            pbl=PBL_STATS)
+            pbl=PBL_STATS, grad_checks=globals().get("GRAD_CHECKS", {}), fourdvar=globals().get("FDV_LOG", {}),
+            station_bias=BIAS_LOG, jac_profile=globals().get("JAC_PROF", {}))
 key = SC[SC.lead_h.isin([6, 24, 48, 72])].pivot(index="arm", columns="lead_h", values="gap_t2m_conus")
 summ["gap_closed_t2m"] = {a: {int(k): (None if pd.isna(v) else round(100 * float(v), 1))
                               for k, v in row.items()} for a, row in key.iterrows()}

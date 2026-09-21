@@ -270,3 +270,46 @@ python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --lon
 Optional sensitivity at 0.25°: `--oi-L 150` (station increments at a scale the finer grid can hold).
 
 `--lite` (default on for `large`) keeps only 2 m T, T850 and Z500 from each forecast; scores are identical to full storage (checked at 1°).
+
+---
+
+## 12. GMAO IAU variants, other operational methods, and ML-specific methods (22 Sep 2026)
+
+### 12.1 What GMAO uses and how it maps to a 6-hourly ML cycle
+| GMAO method | Description | Analogue here |
+|---|---|---|
+| IAU (Bloom et al. 1996), GEOS-5 / MERRA-2 | 6 h analysis increment added as a constant forcing during a model re-run (low-pass filter on fast modes); *replay* = IAU with increments from an existing analysis | `IAU-*`, `REPLAY72` |
+| 4DIAU (GEOS Hybrid 4D-EnVar; Todling & El Akkraoui 2018, GMAO TM vol. 50) | Hourly time-varying increments; "nudged 4DIAU" moving to "nearest-time 4DIAU modulated with a digital filter" | HYB cycle with **cycle weights** (below) |
+| Digital-filter-weighted IAU (Polavarapu et al. 2004) | Non-uniform weights = incremental digital filter; weights set the damped frequencies | `W=ramp-up / ramp-down / tri / lanczos` |
+
+GraphCast steps 6 h, so continuous forcing is impossible; what transfers is the **weighting of increments across cycles** and the **time-varying increments**.
+
+### 12.2 Implemented now (all 1°, `--long-nud 72`, base bg)
+
+| Option | What it does | Arm name |
+|---|---|---|
+| **Weighted 4DIAU** `W=<profile>` | Scales both the ERA5 relaxation and the station increment of cycle *k* by w_k (const, ramp-up, ramp-down, tri, lanczos; max 1) | `HYB72-DIR-Wramp-up` … |
+| **Level-selective replay** `LS` | Surface fields and levels ≥ `--hyb-bl-top` (850 hPa) relax to ERA5 with `--hyb-sfc-tau` (24 h), the rest with `--hyb-tau` (6 h): the upper air stays anchored, the boundary layer keeps station information | `HYB72-DIR-LS` |
+| **Station bias correction** `BC` (VarBC-lite) | Per-station (or station × UTC hour, `--bias-mode`) bias, EW-updated each cycle (`--bias-gamma` 0.2) and removed before QC/OI; bias statistics in `summary.json` | `HYB72-DIR-BC`, combinations like `LS+BC` |
+| **Model-Jacobian balance (method 2)** `JAC` | K (`--jac-k` 8) random smooth 2 m T perturbations over the OI box, propagated with GraphCast's **tangent-linear model** (`jax.jvp`, float32) for one 6 h step; local regression of every variable/level response on the 2 m T response (smoothed, `--jac-smooth-km` 500) gives spatially varying, flow-dependent coefficients; the 2 m T station increment is spread with them | `JAC-2F` (single insertion), `HYB72-JAC` (inside the cycle) |
+| **Two-frame 4D-Var (method 3)** `4DV` | Strong-constraint 4D-Var over [t0−12 h, t0]: control = increments to *both* GraphCast input frames (x₋₁₂, x₋₆) for 2 m T and T, q, u, v, Z (levels ≥ 500 hPa), in B^½ space (Gaussian L = `--fdv-L` 300 km, std `--fdv-sig`); cost = background + stations at t0−6 h on x₋₆ + stations at t0 on F(x₋₁₂, x₋₆); gradient by `jax.value_and_grad` through GraphCast, L-BFGS (`--fdv-iter` 20). Launch pair (x₋₆ᵃ, F(x₋₁₂ᵃ, x₋₆ᵃ)) is model-consistent by construction | `4DV` (on the 24 h background) |
+| **Hybrid + 4D-Var** | 72 h hybrid cycle to t0−6 h (stations through t0−12 h), then the 4D-Var window with an ERA5 anchor at t0 (`--fdv-era5-weight`) | `HYB72-4DV` |
+| Gradient self-test | Compares the float32 differentiable step with the operational forward step, and the JVP with a finite difference (printed; >20 % disagreement warns) | `grad_checks` in `summary.json` |
+
+Not yet implemented: **method 1** (gradient-tuned assimilation settings). It uses the same differentiable step but must be trained on a set of development dates to avoid fitting one case; it comes after the multi-date runs.
+
+### 12.3 Run (1°, data already downloaded)
+```bash
+# operational variants of the hybrid cycle
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --long-nud 72 \
+    --hyb-types DIR --hyb-variants base,LS,BC,LS+BC,W=ramp-up,W=ramp-down,W=tri \
+    --arms REPLAY72,HYB72-DIR,HYB72-DIR-LS,HYB72-DIR-BC,HYB72-DIR-LS+BC,HYB72-DIR-Wramp-up,HYB72-DIR-Wramp-down,HYB72-DIR-Wtri \
+    --outdir runs/exp_main/20180115T12_isd_bg_hybvariants
+
+# ML-specific methods (JAC and 4D-Var)
+python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --long-nud 72 \
+    --hyb-types DIR,JAC,4DV --nud-windows 6 --nud-types DIR \
+    --arms DIR-1F,NUD6-DIR,JAC-2F,4DV,HYB72-DIR,HYB72-JAC,HYB72-4DV,REPLAY72 \
+    --outdir runs/exp_main/20180115T12_isd_bg_mlda
+```
+Check first in the log: the **gradient self-test** (`step32_vs_fwd_bf16_conus_rms_2t_K` should be small, ~0.01–0.1 K; `jvp_vs_fd_T925_rel_err` < 0.2), the **JAC profile** (mean dT(p)/dT₂ₘ over CONUS land — the model's own vertical spreading, to compare with the regression 0.44/0.24/0 and the fixed 1.0/0.6/0.2), and the **4D-Var cost reduction** (J₀ → J_final).
