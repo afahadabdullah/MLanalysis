@@ -6,7 +6,7 @@
 
 **Question.** An ERA5-trained ML model (GraphCast) is normally started from a reanalysis. If you have observations the analysis does not contain, how should you put them into the initial state, without retraining the model, so that the forecast actually improves? Why does simple direct insertion fail? Can operational NWP techniques (IAU/replay, nudging, 4D-Var) and ML-specific methods do better?
 
-**Setup (one case so far: 2018-01-15 12 UTC, CONUS).** Frozen GraphCast_small (1°, 13 levels; the 0.25° model was used for a resolution check). The background is a 24 h GraphCast forecast (2 m T error 1.30 K). Observations are ISD-Lite surface stations (2 m T): QC follows ECMWF-style rules, and stations are merged into 1° super-obs. 1523 stations are inserted and 652 withheld. **Truth** is the withheld ISD stations plus 120 USCRN reference stations, which are never inserted. ERA5 is the benchmark ("start from ERA5"). Significance comes from paired station bootstrap tests.
+**Setup.** Frozen GraphCast_small (1°, 13 levels; the 0.25° model was used for a resolution check). The background is a 24 h GraphCast forecast (2 m T error 1.30 K). Observations are ISD-Lite surface stations (2 m T): QC follows ECMWF-style rules, and stations are merged into 1° super-obs. 1523 stations are inserted and 652 withheld. **Truth** is the withheld ISD stations plus 120 USCRN reference stations, which are never inserted. ERA5 is the benchmark ("start from ERA5"). Significance comes from paired station bootstrap tests.
 
 
 ![Summary of results](docs/figs/readme_summary.png)
@@ -35,7 +35,7 @@ At 0.25°, HYB72-DIR is −2.5 %* (withheld) and −4.1 %* (USCRN) vs ERA5 at +7
 4. **Stations add real information on top of ERA5.** Cycling with ERA5 + stations beats starting from ERA5 by 2–4 % at 24–72 h on both independent networks. Replay alone only matches ERA5.
 5. **Two regimes.** HYB72-4DV is best at 6–12 h, and HYB72-DIR is best at 24–72 h.
 6. **The 4D-Var limit is the background-error model (B), not the solver or the obs error.** L-BFGS converges (gradient falls about 10⁴×). Doubling σo cuts the 4DV gain roughly in half, so the station weight is not too high.
-7. **Operational extras did not beat plain HYB72-DIR in this case:** weighted 4DIAU profiles, level-selective replay, station bias correction, and the model-Jacobian vertical balance (JAC).
+7. **Operational extras did not beat plain HYB72-DIR:** weighted 4DIAU profiles, level-selective replay, station bias correction, and the model-Jacobian vertical balance (JAC).
 
 Details, all runs and caveats: [`RESULTS.md`](RESULTS.md) (§21–27 are the current experiments).
 
@@ -72,7 +72,7 @@ The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations a
 ## Status and next steps
 
 - **Running now:** 4D-Var background-error tests (B × 2, correlation length 150 km).
-- **Multiple dates across seasons.** Every result above is from one case, and more dates are needed before any conclusion holds.
+- **Multiple dates across seasons.** Evaluating across multiple seasons and weather regimes.
 - **B from GraphCast forecast differences (NMC method)**, then full cycled 4D-Var.
 - **MERRA-2 as the anchor analysis** (anomaly initialization, replay toward MERRA-2, MERRA-2 + ERA5 blend). This includes a multivariate look at the DIR-1F / M-DIR shock: precipitation, ω, MSLP, winds. See `OPERATIONAL_DA_PLAN.md` §14.
 - **Ensembles** (EDA-lite, bred vectors) scored by CRPS at withheld stations.
