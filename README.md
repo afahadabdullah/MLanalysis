@@ -8,6 +8,9 @@
 
 **Setup (one case so far: 2018-01-15 12 UTC, CONUS).** Frozen GraphCast_small (1°, 13 levels; the 0.25° model was used for a resolution check). The background is a 24 h GraphCast forecast (2 m T error 1.30 K). Observations are ISD-Lite surface stations (2 m T): QC follows ECMWF-style rules, and stations are merged into 1° super-obs. 1523 stations are inserted and 652 withheld. **Truth** is the withheld ISD stations plus 120 USCRN reference stations, which are never inserted. ERA5 is the benchmark ("start from ERA5"). Significance comes from paired station bootstrap tests.
 
+
+![Summary of results](docs/figs/readme_summary.png)
+
 ---
 
 ## Main results (1°, withheld stations unless noted)
@@ -23,8 +26,6 @@
 | **HYB72-4DV** | REPLAY72 cycle, final insertion by 4D-Var | **−13.2*** | **−3.1*** | −2.0* | −2.4* | −3.1* |
 
 At 0.25°, HYB72-DIR is −2.5 %* (withheld) and −4.1 %* (USCRN) vs ERA5 at +72 h, with 2–5 % lower absolute errors and the same ranking of arms.
-
-![Lead time vs error](docs/figs/da_lead_vs_error_all_arms.png)
 
 ### What we learned
 
@@ -61,7 +62,7 @@ The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations a
 |---|---|
 | `scripts/exp_main_real_obs.py` | Main experiment: QC, OI, all insertion arms (DIR/COL/BAL/PBL, IAU, nudging, replay/hybrid cycling, JAC, 4D-Var), forecasts, verification, plots |
 | `scripts/download_*.py` | ERA5 (1° and 0.25°), ISD-Lite, USCRN downloaders |
-| `scripts/plot_*.py` | Synthesis figures (`docs/figs/`) |
+| `scripts/plot_*.py` | Synthesis figures in `docs/figs/` (`plot_readme_summary.py` makes the figure above) |
 | `scripts/test_*.py`, `exp0_*` | Earlier exploratory experiments (retention, balance, IAU, twin/OSSE tests; RESULTS §1–17) |
 | `RESULTS.md` | Full log of results and reviews |
 | `OPERATIONAL_DA_PLAN.md` | Operational DA design, method options, roadmap (Steps 5–7) |
