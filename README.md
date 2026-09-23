@@ -4,7 +4,12 @@
 [![Model: GraphCast](https://img.shields.io/badge/model-GraphCast__small-green.svg)](https://github.com/google-deepmind/graphcast)
 [![Platform: NCCS Prism](https://img.shields.io/badge/platform-NCCS%20Prism%20GPUs-orange.svg)](SETUP_NCCS_PRISM.md)
 
-**Question.** An ERA5-trained ML model (GraphCast) is normally started from a reanalysis. If you have observations the analysis does not contain, how should you put them into the initial state, without retraining the model, so that the forecast actually improves? Why does simple direct insertion fail? Can operational NWP techniques (IAU/replay, nudging, 4D-Var) and ML-specific methods do better?
+**Question & Scope.** An ERA5-trained ML model (GraphCast) is normally evaluated by starting it from the same reanalysis it was trained on. In operational NWP forecasting, however, real-time ERA5 is unavailable due to latency (~5 days). Real-world forecasting must therefore be initialized from or anchored to **foreign reanalyses (such as NASA MERRA-2, GEOS-FP, or GFS) that the model never saw during training**, alongside fresh in-situ observations.
+
+This project investigates:
+1. **Foreign-analysis forecasting:** How can a frozen ML model be initialized from a foreign reanalysis like MERRA-2 without suffering severe distribution mismatch or initialization shock?
+2. **Observation insertion:** If you have observations the analysis does not contain, how should you put them into the initial state, without retraining the model, so that the forecast actually improves?
+3. **Operational DA mechanisms:** Why does direct insertion fail, and can operational NWP techniques (IAU/replay, nudging, 4D-Var, anomaly initialization) bridge foreign analyses and real observations into frozen ML models?
 
 **Setup.** Frozen GraphCast_small (1°, 13 levels; the 0.25° model was used for a resolution check). The background is a 24 h GraphCast forecast (2 m T error 1.30 K). Observations are ISD-Lite surface stations (2 m T): QC follows ECMWF-style rules, and stations are merged into 1° super-obs. 1523 stations are inserted and 652 withheld. **Truth** is the withheld ISD stations plus 120 USCRN reference stations, which are never inserted. ERA5 is the benchmark ("start from ERA5"). Significance comes from paired station bootstrap tests.
 
@@ -71,8 +76,8 @@ The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations a
 
 ## Status and next steps
 
-- **Running now:** 4D-Var background-error tests (B × 2, correlation length 150 km).
-- **Multiple dates across seasons.** Evaluating across multiple seasons and weather regimes.
-- **B from GraphCast forecast differences (NMC method)**, then full cycled 4D-Var.
-- **MERRA-2 as the anchor analysis** (anomaly initialization, replay toward MERRA-2, MERRA-2 + ERA5 blend). This includes a multivariate look at the DIR-1F / M-DIR shock: precipitation, ω, MSLP, winds. See `OPERATIONAL_DA_PLAN.md` §14.
-- **Ensembles** (EDA-lite, bred vectors) scored by CRPS at withheld stations.
+- **Current focus — NWP forecasting from foreign reanalyses (NASA MERRA-2):** GraphCast was trained exclusively on ERA5. Operational deployment requires initializing from or anchoring to foreign analyses (such as MERRA-2 or real-time GEOS-FP) that the model never saw during training. Current work evaluates the foreign-analysis penalty, anomaly initialization (quantile matching / `M-QM`), and hybrid replay toward MERRA-2 (`REPLAY72-M`, `HYB72-MQM`) to absorb foreign states without retraining.
+- **Shock propagation across variables:** Multivariate analysis of initialization shock from foreign analyses and direct station insertion across vertical velocity ($\omega$), precipitation, MSLP, and winds (see [`OPERATIONAL_DA_PLAN.md`](OPERATIONAL_DA_PLAN.md) §14).
+- **4D-Var background-error formulation:** Testing background-error covariance $B$ modifications ($\times 2$ variance, correlation lengths $L=150\text{ km}$ vs $300\text{ km}$) and NMC-derived forecast difference statistics.
+- **Multiple dates across seasons:** Evaluating across diverse seasonal regimes.
+- **Ensembles:** EDA-lite and bred vectors evaluated with CRPS at independent withheld stations.
