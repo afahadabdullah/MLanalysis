@@ -78,6 +78,6 @@ The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations a
 
 - **Current focus — NWP forecasting from foreign reanalyses (NASA MERRA-2):** GraphCast was trained exclusively on ERA5. Operational deployment requires initializing from or anchoring to foreign analyses (such as MERRA-2 or real-time GEOS-FP) that the model never saw during training. Current work evaluates the foreign-analysis penalty, anomaly initialization (quantile matching / `M-QM`), and hybrid replay toward MERRA-2 (`REPLAY72-M`, `HYB72-MQM`) to absorb foreign states without retraining.
 - **Shock propagation across variables:** Multivariate analysis of initialization shock from foreign analyses and direct station insertion across vertical velocity ($\omega$), precipitation, MSLP, and winds (see [`OPERATIONAL_DA_PLAN.md`](OPERATIONAL_DA_PLAN.md) §14).
-- **4D-Var background-error formulation:** Testing background-error covariance $B$ modifications ($\times 2$ variance, correlation lengths $L=150\text{ km}$ vs $300\text{ km}$) and NMC-derived forecast difference statistics.
+- **4D-Var tuning (done for this case):** larger B (σb × 2) and shorter correlation length (150 km) fit the stations more closely at t0 but do not improve the forecast, so the defaults stay (RESULTS §27.6). A flow-dependent, NMC-based B is the remaining 4D-Var option.
 - **Multiple dates across seasons:** Evaluating across diverse seasonal regimes.
 - **Ensembles:** EDA-lite and bred vectors evaluated with CRPS at independent withheld stations.

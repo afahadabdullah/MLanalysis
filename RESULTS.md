@@ -1157,3 +1157,19 @@ Same as lbfgs2 but `--fdv-sigo-scale 2.0` (`runs/exp_main/20180115T12_isd_bg_4dv
 - With half the station weight, 4DV loses about half its gain at every lead. HYB72-4DV is unchanged to slightly worse (USCRN 12 h: −4.0 → −0.6 %). HYB72-4DV moves closer to ERA5 on the grid (t0 CONUS error 0.452 → 0.358 K) but further from the stations. **The stations add real information that ERA5 lacks; down-weighting them throws it away.**
 - **§27.4 was wrong about the cause.** A single-case Desroziers estimate assumes B has the right structure. If B cannot represent what the stations see, the analysis cannot fit them, (y−Hxa)·(y−Hxb) stays large, and the method reports it as a large σo. Here the forecast test says the fit is limited by **B (too small or wrong structure)**, not by R.
 - Decision: keep σo = 1.12 K (`--sigma-repr 1.0`); skip the `--sigma-repr 2.0` run. Next, test a larger or longer-range B (`--fdv-sig` × 2, `--fdv-L`).
+
+### 27.6 Background-error tests: fitting closer does not improve the forecast (sigb2, L150 runs)
+Same setup as lbfgs2, with only B changed: `--fdv-sig` × 2 for every variable (`runs/exp_main/20180115T12_isd_bg_4dv_sigb2`), and correlation length `--fdv-L 150` instead of 300 km (`..._4dv_L150`). All runs converged (|g₁|/|g₀| ≤ 1.7e-3).
+
+| B setting | 4DV Jo(t0−6h), Jo(t0) | 4DV t0 err, withheld (K) | HYB72-4DV t0 err (K) | 4DV vs BASE, withheld % (6/12/24/48/72 h) | HYB72-4DV vs BASE, withheld % (6/12/24/48/72 h) |
+|---|---|:---:|:---:|---|---|
+| σb × 1, L 300 (lbfgs2) | 1016, 1298 | 2.014 | 1.832 | 4.7 / 5.0 / 1.9 / 2.3 / 2.5 | **13.2 / 10.7** / 6.3 / 8.1 / 6.7 |
+| σb × 2, L 300 | 909, 1092 | 1.920 | 1.792 | 3.6 / 3.3 / 1.4 / 3.0 / 2.4 | 12.1 / 10.6 / 6.6 / 7.7 / 6.7 |
+| σb × 1, L 150 | 818, 1072 | 1.908 | 1.779 | 4.8 / 3.8 / 2.2 / 3.7 / 2.8 | 12.2 / 9.6 / 6.4 / 8.0 / 7.0 |
+
+(HYB72-DIR, unchanged: 9.8 / 8.3 / 6.9 / 9.0 / 7.9.)
+
+- A larger or shorter-range B does what it should at t0: Jo falls by 10–20 % and the t0 fit to the withheld stations improves by about 0.1 K (4DV) and 0.05 K (HYB72-4DV).
+- **The forecasts do not improve.** The changes are within ±1 percentage point and inside the bootstrap intervals. HYB72-4DV even loses about 1 pp at +6 h, while its t0 fit gets better: the extra station detail is small-scale 2 m T structure that GraphCast drops within the first step. This is the "consistency beats closeness" result again, now inside 4D-Var.
+- The Desroziers ratio stays at 1.7–2.0 with any B. Neither B amplitude nor length scale can remove this misfit, so it is representativeness (point stations vs 1° cells) that the model cannot hold. Doubling σo (§27.5) still hurts, because it also shrinks the large-scale part of the increment that the model does keep.
+- **Conclusion for this case:** 4D-Var tuning is saturated; keep σb × 1, L = 300 km, σo = 1.12 K. The ranking is unchanged: HYB72-4DV is best at 6–12 h and HYB72-DIR best at 24–72 h. Further gains must come from elsewhere (multi-date evaluation, flow-dependent or NMC-based B with cross-variable structure, or more observation types), not from scaling this B.
