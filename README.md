@@ -1,4 +1,4 @@
-# MLanalysis: inserting observations into a frozen ML weather model
+# MLanalysis: Observation Insertion and Initial-Condition Sensitivity in ML Weather Forecasting with GraphCast
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Model: GraphCast](https://img.shields.io/badge/model-GraphCast__small-green.svg)](https://github.com/google-deepmind/graphcast)
