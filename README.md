@@ -1,126 +1,77 @@
-# MLanalysis: Observation Insertion & Initial-Condition Sensitivity in ML Weather Forecasting
+# MLanalysis: inserting observations into a frozen ML weather model
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Model: GraphCast](https://img.shields.io/badge/model-GraphCast__small-green.svg)](https://github.com/google-deepmind/graphcast)
-[![Target: NCCS Prism](https://img.shields.io/badge/platform-NCCS%20Prism%20GPUs-orange.svg)](SETUP_NCCS_PRISM.md)
+[![Platform: NCCS Prism](https://img.shields.io/badge/platform-NCCS%20Prism%20GPUs-orange.svg)](SETUP_NCCS_PRISM.md)
 
-An empirical research framework investigating whether and how off-the-shelf, pretrained machine learning weather prediction (MLWP) models can assimilate dense observational data into existing global reanalyses—and whether physical or model consistency governs forecast retention.
+**Question.** An ERA5-trained ML model (GraphCast) is normally started from a reanalysis. If you have observations the analysis does not contain, how should you put them into the initial state, without retraining the model, so that the forecast actually improves? Why does simple direct insertion fail? Can operational NWP techniques (IAU/replay, nudging, 4D-Var) and ML-specific methods do better?
 
----
-
-## 🔬 Scientific Overview
-
-Pretrained, ERA5-trained ML weather models (e.g. DeepMind's GraphCast) are typically initialized directly from gridded global reanalyses. Operational weather centers and meteorological organizations often wish to inject their own high-density regional observations (such as surface mesonets) into these initial states without retraining the model.
-
-### Central Research Question
-> **Can an ERA5-trained ML forecast model make use of observational information that is not in its initial analysis, and does the insertion strategy (direct vs. balanced vs. nudged) determine whether that information helps or hurts?**
-
-### Hypotheses & Core Questions
-
-| # | Question | Hypothesis | Experiment |
-|---|---|---|---|
-| **Q1** | Is ERA5 the practical ceiling for initial conditions, and why does a foreign analysis (MERRA-2) score worse? | The MERRA-2 penalty is predominantly distribution mismatch, which statistical climatology mapping to ERA5 can largely alleviate. | **Exp 1** |
-| **Q2** | Does adding mesonet 2 m temperature improve short-range forecasts over the ERA5 ceiling against independent reference stations? | Direct insertion improves $t_0$ fit, but rapid increment decay occurs within early steps. Physically/model-consistent insertion retains more value. | **Exp 2** |
-| **Q3** | Does consistency matter (balanced or nudged vs. direct)? | Direct surface increments conflict with boundary-layer vertical profiles and are rejected or distorted. Balanced and nudged states preserve information longer. | **Exp 2, Exp 4** |
-| **Q4** | Is forecast degradation caused by physical imbalance or by the arrival of new information? | Inserting already-assimilated stations (ASOS/METAR) introduces imbalance with minimal new information, isolating the imbalance penalty. | **Exp 3, Exp 4** |
+**Setup (one case so far: 2018-01-15 12 UTC, CONUS).** Frozen GraphCast_small (1°, 13 levels; the 0.25° model was used for a resolution check). The background is a 24 h GraphCast forecast (2 m T error 1.30 K). Observations are ISD-Lite surface stations (2 m T): QC follows ECMWF-style rules, and stations are merged into 1° super-obs. 1523 stations are inserted and 652 withheld. **Truth** is the withheld ISD stations plus 120 USCRN reference stations, which are never inserted. ERA5 is the benchmark ("start from ERA5"). Significance comes from paired station bootstrap tests.
 
 ---
 
-## 🛠️ Insertion Strategies
+## Main results (1°, withheld stations unless noted)
 
-All mesonet observations are processed into super-observations averaged to the 1° grid with representativeness error estimates before insertion:
+2 m T RMSE change, in %. Negative = better; * = significant at 95 %.
 
-1. **Direct Insertion (`-DIR`)**:
-   - Univariate Optimal Interpolation (OI) applied strictly to the 2 m temperature (`2t`) channel over CONUS.
-   - All other vertical and surface channels remain unchanged.
-2. **Balanced Increment (`-BAL`)**:
-   - The surface temperature increment $\Delta T_{\text{2m}}$ is propagated vertically into lower tropospheric levels (1000, 925, 850 hPa) using boundary-layer weights.
-   - Geopotential ($z$) is hypsometrically re-integrated through the column to enforce hydrostatic balance.
-3. **Model-Nudged (`-NUD`)**:
-   - The ML model is integrated forward from $t_0 - 24\,\text{h}$ with continuous relaxation (analysis nudging) toward observation-adjusted states.
-   - Allows the ML model's internal dynamics to construct its own dynamically consistent response across all state channels.
+| Arm | What it does | vs BASE, +6 h | vs ERA5, +12 h | vs ERA5, +24 h | vs ERA5, +72 h | USCRN vs ERA5, +72 h |
+|---|---|:---:|:---:|:---:|:---:|:---:|
+| DIR-1F | station analysis (OI) inserted into the t0 frame only | +1.9 | +9.9* | +4.4* | +3.5 | −1.2 |
+| 4DV | two-frame 4D-Var through GraphCast (TL/adjoint via JAX) | −4.7* | +3.1 | +2.5 | +2.1 | +0.4 |
+| REPLAY72 | 72 h of 6-hourly cycling, full state relaxed to ERA5 (τ = 6 h) | −12.2* | −1.5* | −0.8* | −0.9 | −2.0* |
+| **HYB72-DIR** | REPLAY72 + station increments every cycle | −9.8* | −0.4 | **−2.7*** | **−3.6*** | **−4.3*** |
+| **HYB72-4DV** | REPLAY72 cycle, final insertion by 4D-Var | **−13.2*** | **−3.1*** | −2.0* | −2.4* | −3.1* |
 
----
+At 0.25°, HYB72-DIR is −2.5 %* (withheld) and −4.1 %* (USCRN) vs ERA5 at +72 h, with 2–5 % lower absolute errors and the same ranking of arms.
 
-## 🧪 Experimental Roadmap
+![Lead time vs error](docs/figs/da_lead_vs_error_all_arms.png)
 
-```
-Stage S0 (1 Case, 6 runs)   ──▶ Stage S1 (Pilot, 10 dates)  ──▶ Stage S2 (Tuning, 24 dates) ──▶ Stage S3 (Evaluation, 80 dates)
-[Sanity & Pipeline Verification]   [Effect Size & S/N Ratio]     [Freeze Hyperparameters]          [Final Block Bootstrap Tests]
-```
+### What we learned
 
-- **Experiment 1: Baselines & Ceiling Gap**
-  - Compares native ERA5 (`E`), MERRA-2 (`M`), nudged controls (`E-NUD0`, `M-NUD0`), and climatology-mapped MERRA-2 (`M-CLIM`) to separate distribution gap from true information gap.
-- **Experiment 2: Mesonet Insertion (Core)**
-  - Tests `-DIR`, `-BAL`, and `-NUD` increments on ERA5 and MERRA-2 baselines against independent USCRN stations up to 72 hours.
-- **Experiment 3: Imbalance vs. New Information**
-  - Replaces mesonet observations with already-assimilated ASOS/METAR observations to isolate numerical shock from observational gain.
-- **Experiment 4: Gridded Swaps & Dynamic Rebalance**
-  - **S1 (Surface):** Swapping CONUS `2t` with high-resolution NOAA URMA.
-  - **S2 (Aloft):** Swapping full-column temperature with JRA-3Q, evaluating hypsometric and geostrophic rebalancing.
+1. **Direct insertion shocks the model.** DIR-1F fits the stations best at t0, but by +6 h it is worse than doing nothing. Only the t0 frame changes, so GraphCast reads the mismatch between its two input frames as a tendency. At 0.25° the damage is larger (+13.6 %* vs ERA5 at +72 h).
+2. **Consistency beats closeness.** 4D-Var fits the stations less closely at t0 than DIR-1F (2.01 vs 1.78 K) but forecasts better at every lead. Changing both input frames through the model's own dynamics removes the shock.
+3. **The upper air must be anchored.** A 3-day free run or surface-only nudging drifts aloft (T850 error ≈ 1.9–2.0 K). Relaxing the full state to ERA5 every 6 h keeps T850 error near 0.22 K.
+4. **Stations add real information on top of ERA5.** Cycling with ERA5 + stations beats starting from ERA5 by 2–4 % at 24–72 h on both independent networks. Replay alone only matches ERA5.
+5. **Two regimes.** HYB72-4DV is best at 6–12 h, and HYB72-DIR is best at 24–72 h.
+6. **The 4D-Var limit is the background-error model (B), not the solver or the obs error.** L-BFGS converges (gradient falls about 10⁴×). Doubling σo cuts the 4DV gain roughly in half, so the station weight is not too high.
+7. **Operational extras did not beat plain HYB72-DIR in this case:** weighted 4DIAU profiles, level-selective replay, station bias correction, and the model-Jacobian vertical balance (JAC).
+
+Details, all runs and caveats: [`RESULTS.md`](RESULTS.md) (§21–27 are the current experiments).
 
 ---
 
-## 📊 Data Sources & Observing Systems
+## Running
 
-| Dataset | Role | Grid / Resolution | Details |
-|---|---|---|---|
-| **ERA5** | In-distribution baseline | 1°, 13 pressure levels | Native training distribution (Google Cloud ARCO-ERA5) |
-| **MERRA-2** | Foreign reanalysis baseline | 1° regridded | NASA GMAO reanalysis (`inst3_3d_asm_Np`, `inst1_2d_asm_Nx`) |
-| **MADIS Mesonets** | Inserted observation data | Point stations (CONUS) | High-density non-GTS surface networks (unassimilated) |
-| **USCRN** | Ground truth verification | ~140 reference stations | NOAA US Climate Reference Network (**never inserted**) |
-| **ASOS / METAR** | Imbalance control | CONUS network | Standard surface reports (already assimilated in analyses) |
-| **URMA** | Exp 4 Surface Swap | 2.5 km regridded to 1° | NOAA Unrestricted Mesoscale Analysis |
-| **JRA-3Q** | Exp 4 Upper-air Swap | 1.25° regridded to 1° | JMA reanalysis temperature fields |
-| **IGRA2** | Upper-air verification | Radiosonde soundings | CONUS 850 / 700 hPa temperature verification at lead times |
+Environment and GPU setup on NCCS Prism: [`SETUP_NCCS_PRISM.md`](SETUP_NCCS_PRISM.md). Data: ERA5 (WeatherBench-2 / ARCO), ISD-Lite and USCRN (`scripts/download_*.py`).
 
----
+```bash
+export XLA_FLAGS=--xla_gpu_deterministic_ops=true      # bit-reproducible runs
 
-## 📂 Repository Structure & Documentation
-
-```text
-MLanalysis/
-├── README.md               # Project overview and scientific guide (this file)
-├── PROJECT_PLAN_LEAN.md    # Consolidated lean project specification (Rev 6)
-├── PROJECT_PLAN.md         # Comprehensive proposal, theory, and background
-├── SETUP_NCCS_PRISM.md     # HPC setup and execution instructions for NASA NCCS Prism
-├── DATA_SOURCES.md         # Reference and parked observation sources
-├── .gitignore              # Git ignore rules for data, models, and environments
-│
-└── [Planned Modules]
-    ├── config.yaml         # Experiment configuration and hyperparameter settings
-    ├── prep_era5.py        # ERA5 acquisition and regridding pipeline
-    ├── prep_merra2.py      # MERRA-2 adapter and regridding pipeline
-    ├── clim_map.py         # Statistical climatology mapping (MERRA-2 -> ERA5)
-    ├── obs_madis.py        # MADIS QC, station filtering, and super-obbing
-    ├── insert.py           # Direct and balanced insertion algorithms
-    ├── nudge.py            # ML analysis nudging routines
-    ├── swap.py             # Gridded variable swap & balance routines
-    ├── run.py              # Forecast execution orchestrator (GraphCast)
-    ├── score.py            # Verification metrics (RMSE, bias, retention) vs. USCRN/IGRA2
-    └── diagnostics.py      # Shock metrics, vertical response profiles, and energy spectra
+python -u scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --long-nud 72 \
+    --hyb-types DIR,4DV --fdv-solver lbfgs --fdv-iter 60 \
+    --arms DIR-1F,4DV,HYB72-DIR,HYB72-4DV,REPLAY72 \
+    --outdir runs/exp_main/20180115T12_isd_bg_4dv 2>&1 | tee run.log
 ```
 
----
+The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations and the ERA5 grid, and bootstrap tests. It also writes nine figures. Useful options: `--arms`, `--hyb-types`, `--steps`, `--sigma-repr`, and the `--fdv-*` 4D-Var settings (`--fdv-sig`, `--fdv-L`, `--fdv-solver gn|lbfgs`). See `--help` for the full list.
 
-## 🚀 Getting Started
+## Repository
 
-### High-Performance Computing Setup
-This project runs frozen `GraphCast_small` (1°, 13 pressure levels) using JAX and CUDA 12 on GPU clusters.
+| Path | Contents |
+|---|---|
+| `scripts/exp_main_real_obs.py` | Main experiment: QC, OI, all insertion arms (DIR/COL/BAL/PBL, IAU, nudging, replay/hybrid cycling, JAC, 4D-Var), forecasts, verification, plots |
+| `scripts/download_*.py` | ERA5 (1° and 0.25°), ISD-Lite, USCRN downloaders |
+| `scripts/plot_*.py` | Synthesis figures (`docs/figs/`) |
+| `scripts/test_*.py`, `exp0_*` | Earlier exploratory experiments (retention, balance, IAU, twin/OSSE tests; RESULTS §1–17) |
+| `RESULTS.md` | Full log of results and reviews |
+| `OPERATIONAL_DA_PLAN.md` | Operational DA design, method options, roadmap (Steps 5–7) |
+| `PROJECT_PLAN_LEAN.md`, `PROJECT_PLAN.md` | Project scope and original proposal |
+| `DATA_SOURCES.md`, `SETUP_NCCS_PRISM.md` | Data sources; cluster setup |
 
-For step-by-step instructions on setting up the environment, compiling JAX with CUDA, allocating nodes, and downloading GraphCast weights on the NASA NCCS Prism cluster, see:
-📖 **[SETUP_NCCS_PRISM.md](SETUP_NCCS_PRISM.md)**
+## Status and next steps
 
-### Running Stage S0 Verification
-Before scaling experiments, Stage S0 executes a single winter 12 UTC CONUS test case across six baseline configurations (`E`, `M`, `E-NUD0`, `E-DIR`, `E-BAL`, `E-NUD`) to verify:
-1. Input contract compliance with official DeepMind GraphCast checkpoints.
-2. Exact numerical reproducibility ($\alpha=1$ identity matches base analysis).
-3. Increment retention and plausibility of downstream response.
-
----
-
-## 📑 References & Documentation
-- Detailed scientific proposal: [`PROJECT_PLAN.md`](PROJECT_PLAN.md)
-- Consolidated lean roadmap: [`PROJECT_PLAN_LEAN.md`](PROJECT_PLAN_LEAN.md)
-- Additional data sources: [`DATA_SOURCES.md`](DATA_SOURCES.md)
-- Cluster setup guide: [`SETUP_NCCS_PRISM.md`](SETUP_NCCS_PRISM.md)
+- **Running now:** 4D-Var background-error tests (B × 2, correlation length 150 km).
+- **Multiple dates across seasons.** Every result above is from one case, and more dates are needed before any conclusion holds.
+- **B from GraphCast forecast differences (NMC method)**, then full cycled 4D-Var.
+- **MERRA-2 as the anchor analysis** (anomaly initialization, replay toward MERRA-2, MERRA-2 + ERA5 blend). This includes a multivariate look at the DIR-1F / M-DIR shock: precipitation, ω, MSLP, winds. See `OPERATIONAL_DA_PLAN.md` §14.
+- **Ensembles** (EDA-lite, bred vectors) scored by CRPS at withheld stations.
