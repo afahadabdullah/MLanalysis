@@ -383,3 +383,12 @@ Code changes in `exp_main_real_obs.py`: `--provider {era5, merra2, qm, blend}` f
 
 ### 14.5 Real-time follow-on
 Repeat the best configuration with **GEOS-FP** (real-time GEOS analyses on NCCS) as the provider for a recent period, i.e. an actual real-time Mode A system at NASA.
+
+### 14.6 Revisit DIR-1F shock with MERRA-2: multivariate propagation analysis (to do with Step 7)
+**Why:** DIR-1F (single-frame direct insertion at t0) is the clearest shock case we have. In the v3 run (RESULTS §27.2) it fits the withheld stations best at t0 (1.784 K vs 2.241 K for BASE), but by +6 h it is worse than BASE (2.023 vs 1.985 K, +1.9 %; +16.1 %* vs ERA5). Its first-step jump |F(x0) − x0| for 2 m T is 6.19 K, vs 5.91 K for BASE and 6.04 K for ERA5. JAC-2F behaves the same way (+4.2 % at +6 h, §24). The cause: the t0 frame is changed but the t0−6h frame is not, so GraphCast reads the mismatch as a false tendency. So far we have only looked at 2 m T.
+
+**What to do:** when the MERRA-2 arms are built (M-DIR is the MERRA-2 analogue of DIR-1F: a foreign state dropped into one frame), analyse how the DIR-1F / M-DIR shock propagates across variables, in the same style as the earlier dynamical analysis (RESULTS §3–4: spatial advection, vertical coupling, winds/MSLP adjustment):
+- **Variables:** 2 m T, **total_precipitation_6hr**, MSLP, 10 m u/v, T/Z/q/u/v/ω on levels (esp. 1000–700 hPa and 500 hPa).
+- **Diagnostics:** increment maps F(x_arm) − F(x_BASE) at 0/6/12/24/48 h; first-step jump per variable; vertical profiles of the response; ω and divergence (gravity-wave-like adjustment); precipitation spin-up/spin-down vs ERA5 and vs MERRA-2 precip; retention and advection of the increment.
+- **Compare:** DIR-1F vs 4DV vs HYB72-DIR/HYB72-4DV (ERA5 base) and M-DIR vs M-QM vs REPLAY72-M/-MQM (MERRA-2 base). Does two-frame / replay / 4D-Var insertion remove the shock signal in precip and ω, not only in 2 m T?
+- **Precip verification:** MERRA-2 PRECTOT and (if added) Stage IV / IMERG over CONUS.
