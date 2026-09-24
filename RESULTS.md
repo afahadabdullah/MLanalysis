@@ -1399,7 +1399,21 @@ Mostly no, for this purpose.
 - **Where it might still pay:** fields that mean/variance mapping handles poorly (precipitation, boundary layer over complex terrain), and long ranges where accumulated drift matters.
 - **To settle it:** a light fine-tune compared with mapping + calibration on the same dates, only if the multi-date runs still show a gap mapping cannot close.
 
-### 32.5 Next steps
+### 32.5 MERRA-2 plus own stations, scored against all three truths
+HYB72-MQM (replay toward QM-mapped MERRA-2 + ISD 2 m T every cycle), at 6 / 12 / 24 / 48 / 72 h:
+- **Stations:** +7.4 / +5.9 / +2.7 / +3.5 / +5.5 % vs the ERA5 start (withheld); −1.1 / −4.5 / +1.1 / −0.1 / +2.0 % at USCRN (all n.s.).
+- **ERA5 analyses (2 m T, CONUS land):** 1.28 / 1.42 / 1.65 / 1.88 / 1.78 K vs 1.43 / 1.48 / 1.68 / 2.00 / 1.86 K for M-QM without stations. The stations move the state toward ERA5, which used many of them.
+- **MERRA-2 analyses (back-mapped):**
+  - 2 m T is slightly worse than M-QM at 6–12 h (1.28 vs 1.14 K at 6 h), because the stations add information MERRA-2 does not have.
+  - Z500 NH is a little better at 72 h (20.7 vs 22.1 m).
+
+Pending run `isd_merra2_4dv` adds the remaining combinations:
+- M-QM+DIR (stations inserted into the mapped pair, no cycling);
+- 4DV-MQM (single-shot 4D-Var on the mapped pair);
+- HYB72-4DV-MQM and HYB72-4DV-M (4D-Var on MERRA-2-replay backgrounds).
+
+### 32.6 Next steps
+- [ ] Run `isd_merra2_4dv` (arms above) and add the results here
 - [ ] Multi-date runs (4 winter, 4 summer): ERA5, M-QM, HYB72-MQM, E+DM24, HYB72-DIR, with month-specific climatologies
 - [ ] Small ensemble of mapped MERRA-2 starts (does averaging recover 48–72 h upper-air skill?)
 - [ ] Lead-dependent output calibration from 2011–2017 January GraphCast forecasts
