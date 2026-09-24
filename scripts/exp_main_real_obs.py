@@ -132,6 +132,10 @@ ap.add_argument("--clim-provider", default=None,
                 help="Provider (MERRA-2) climatology (build_clim.py --source merra2). With --clim-era5 enables the "
                      "anomaly-initialization arms M-MEAN, M-QM, REPLAY<H>-MQM, HYB<H>-MQM, HYB<H>-4DV-MQM")
 ap.add_argument("--qm-ratio-clip", default="0.5,2.0", help="M-QM: clip of std_E/std_M")
+ap.add_argument("--qm-top", type=int, default=850,
+                help="M-QMS/M-BAL: QM (mean+variance) at levels >= this (hPa) and for surface fields, mean shift above")
+ap.add_argument("--edelta-lag", type=int, default=24,
+                help="E+DM<lag>: ERA5 start + the MERRA-2 minus ERA5 anomaly difference from <lag> h earlier (same hour)")
 ap.add_argument("--arms", default="all", help="Comma list of arms to forecast (ERA5 and BASE always kept)")
 ap.add_argument("--boot", type=int, default=1000, help="Bootstrap resamples over stations")
 ap.add_argument("--allow-no-elev", action="store_true", help="Keep stations with unknown elevation (no height correction)")
@@ -463,23 +467,61 @@ def _climv(ds, v, h, kind):
 
 
 def mapped_frame(idx, mode="QM"):
-    """Provider state mapped to ERA5's climate (anomaly initialization). mode MEAN or QM."""
+    """Provider state mapped to ERA5's climate (anomaly initialization).
+    MEAN: x - (clim_M - clim_E) for every variable.
+    QM  : clim_E + (x - clim_M) std_E/std_M for every variable (precipitation: mean shift).
+    QMS : QM for surface fields and levels >= --qm-top, MEAN above (keeps free-troposphere balances linear).
+    BAL : QMS, then geopotential rebuilt hydrostatically from the mapped virtual temperature, anchored at
+          the MEAN-mapped 1000 hPa geopotential (Z consistent with T in every column)."""
     M = provider_frame(idx)
     h = pd.Timestamp(DATETIMES[idx]).hour
     out = {}
     for v in STATE_VARS:
         x = M[v].astype(np.float64)
         mE, mM = _climv(CLIM_E, v, h, "mean"), _climv(CLIM_M, v, h, "mean")
+        shift = x - (mM - mE)
         if mode == "MEAN" or v == "total_precipitation_6hr":
-            y = x - (mM - mE)
+            y = shift
         else:
             sE, sM = _climv(CLIM_E, v, h, "std"), _climv(CLIM_M, v, h, "std")
             r = np.where(sM > 1e-12, sE / np.maximum(sM, 1e-12), 1.0)
             y = mE + (x - mM) * np.clip(r, QM_LO, QM_HI)
+            if mode in ("QMS", "BAL") and x.ndim == 3:            # QM only near the surface
+                low = np.array([p >= args.qm_top for p in LEVELS])[:, None, None]
+                y = np.where(low, y, shift)
         if v in ("total_precipitation_6hr", "specific_humidity"):
             y = np.clip(y, 0.0, None)
         out[v] = y.astype(np.float32)
+    if mode == "BAL" and "geopotential" in out and "temperature" in out:
+        T, Z = out["temperature"].astype(np.float64), out["geopotential"].astype(np.float64)
+        q = out["specific_humidity"].astype(np.float64) if "specific_humidity" in out else 0.0 * T
+        Tv = T * (1.0 + 0.608 * q)
+        asc = sorted(LEVELS, reverse=True)                       # 1000 ... 50 hPa
+        Znew = Z.copy()
+        for pb, pt in zip(asc[:-1], asc[1:]):
+            ib, it = LIDX[pb], LIDX[pt]
+            Znew[it] = Znew[ib] + RD * 0.5 * (Tv[ib] + Tv[it]) * np.log(pb / pt)
+        out["geopotential"] = Znew.astype(np.float32)
     return out
+
+
+def edelta_pair(lag_h):
+    """ERA5 start + the MERRA-2 minus ERA5 difference from lag_h earlier (same hour of day): a perturbation
+    of MERRA-2 size and structure that is not today's (anomaly part only when climatologies are given)."""
+    k = lag_h // 6
+    pair = []
+    for idx in (I0 - 1, I0):
+        E, Lg = era5_frame(idx), idx - k
+        Ml = mapped_frame(Lg, "MEAN") if CLIM_E is not None else provider_frame(Lg)
+        El = era5_frame(Lg)
+        fr = {}
+        for v in STATE_VARS:
+            y = E[v].astype(np.float64) + (Ml[v].astype(np.float64) - El[v])
+            if v in ("total_precipitation_6hr", "specific_humidity"):
+                y = np.clip(y, 0.0, None)
+            fr[v] = y.astype(np.float32)
+        pair.append(fr)
+    return tuple(pair)
 
 
 class _Lev:
@@ -952,9 +994,14 @@ if want("DIR-1F"):
 if DSP is not None and want("M-DIR"):                  # foreign analysis used directly (no cycling)
     ARMS["M-DIR"] = (provider_frame(I0 - 1), provider_frame(I0))
 if CLIM_E is not None:
-    for _mode in ("MEAN", "QM"):
+    for _mode in ("MEAN", "QM", "QMS", "BAL"):
         if want(f"M-{_mode}"):
             ARMS[f"M-{_mode}"] = (mapped_frame(I0 - 1, _mode), mapped_frame(I0, _mode))
+if DSP is not None and want(f"E+DM{args.edelta_lag}"):
+    if I0 - 1 - args.edelta_lag // 6 < 0 or args.edelta_lag % 24:
+        print(f"   E+DM{args.edelta_lag} skipped: lag must be a multiple of 24 h inside the data window")
+    else:
+        ARMS[f"E+DM{args.edelta_lag}"] = edelta_pair(args.edelta_lag)
 for k in ("DIR", "COL", "BAL", "REG", "COL-FIX", "BAL-FIX", "COL-PBL", "BAL-PBL"):
     _nm = f"{k}-2F" if ("FIX" not in k and "PBL" not in k) else f"{k}"
     if want(_nm):
@@ -1820,7 +1867,8 @@ COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d6
        "HYB72-DIR-Wramp-up": "#fdd0a2", "HYB72-DIR-Wramp-down": "#e6550d", "HYB72-DIR-Wtri": "#f16913",
        "M-DIR": "#e7298a", "REPLAY72-M": "#66a61e", "HYB72-M": "#1b9e77",
        "M-MEAN": "#fb9a99", "M-QM": "#e31a1c", "REPLAY72-MQM": "#b2df8a", "HYB72-MQM": "#33a02c",
-       "HYB72-4DV-M": "#6a51a3", "HYB72-4DV-MQM": "#3f007d"}
+       "HYB72-4DV-M": "#6a51a3", "HYB72-4DV-MQM": "#3f007d",
+       "M-QMS": "#fdbf6f", "M-BAL": "#ff7f00", "E+DM24": "#737373"}
 STY = {"ERA5": "--", "BASE": "--", "FREE72": ":", "FREE48": ":", "FREE120": ":", "REPLAY72": "-.", "REPLAY72-M": "-.",
        "M-DIR": "--"}
 EXT = [230, 300, 20, 55]
@@ -2139,7 +2187,8 @@ if DSP is not None:
     with open(os.path.join(OUT, "summary.json"), "w") as f:
         json.dump(summ, f, indent=2, default=float)
     try:
-        MARMS = [a for a in ORDER if a in ("ERA5", "BASE") or a.startswith("M-") or a.endswith("-M") or a.endswith("-MQM")]
+        MARMS = [a for a in ORDER if a in ("ERA5", "BASE") or a.startswith("M-") or a.startswith("E+")
+                 or a.endswith("-M") or a.endswith("-MQM")]
         fig, axs = plt.subplots(1, 3, figsize=(16, 4.6))
         for a in MARMS:
             sub = TT[TT.arm == a].sort_values("lead_h")

@@ -44,12 +44,19 @@ SPECS = [("t2m_conus", "t2m", "conus_land", "2 m T, CONUS land", "K"),
          ("t850_nhx", "t850", "nhx", "T850, NH 20-90N", "K"),
          ("z500_nhx", "z500", "nhx", "Z500, NH 20-90N", "m"),
          ("z500_down", "z500", "down", "Z500, N America-Atlantic", "m")]
-ORDER = ["ERA5", "BASE", "M-DIR", "M-MEAN", "M-QM", "REPLAY72-M", "REPLAY72-MQM", "HYB72-M", "HYB72-MQM",
+ORDER = ["ERA5", "BASE", "E+DM24", "M-DIR", "M-MEAN", "M-QM", "M-QMS", "M-BAL", "REPLAY72-M", "REPLAY72-MQM", "HYB72-M", "HYB72-MQM",
          "HYB72-4DV-M", "HYB72-4DV-MQM", "HYB72-DIR", "HYB72-4DV", "REPLAY72"]
 
 
+ERA5_WORLD = ("ERA5", "BASE", "HYB72-DIR", "HYB72-4DV", "REPLAY72")
+
+
+def is_era5_world(a):
+    return a in ERA5_WORLD or a.startswith("E+")
+
+
 def main(fields, clim_e, clim_p, template=None, out=None, leads_show=(0, 6, 12, 24, 48, 72), quiet=False,
-         ratio_clip=(0.5, 2.0)):
+         ratio_clip=(0.5, 2.0), qm_top=850):
     F = xr.open_dataset(fields)
     CE, CM = xr.open_dataset(clim_e), xr.open_dataset(clim_p)
     out = out or os.path.dirname(os.path.abspath(fields))
@@ -91,17 +98,27 @@ def main(fields, clim_e, clim_p, template=None, out=None, leads_show=(0, 6, 12, 
             cE, cM = clim(CE, k, hour), clim(CM, k, hour)
             r_inv = np.clip(clim(CM, k, hour, "std") / np.maximum(clim(CE, k, hour, "std"), 1e-12), *ratio_clip)
             M = F[f"{k}_provider"].sel(lead_h=L).values
+            Ev = F[f"{k}_era5"].sel(lead_h=L).values if f"{k}_era5" in F else None
             aM = M - cM
+            lev = CLIM_VARS[k][1]
             for a in arms:
                 f = F[k].sel(arm=a, lead_h=L).values
                 if not np.isfinite(f[m]).all():
                     continue
-                fb = cM + (f - cE) * r_inv if "QM" in a else f - cE + cM
+                if "QMS" in a or "BAL" in a:                  # QM only for surface / levels >= qm_top
+                    use_qm = lev is None or lev >= qm_top
+                else:
+                    use_qm = "QM" in a
+                fb = cM + (f - cE) * r_inv if use_qm else f - cE + cM
                 r = dict(arm=a, lead_h=int(L), field=key)
                 for tag, x in (("raw", f), ("back", fb)):
                     d = x - M
                     r[f"rmse_{tag}"] = float(np.sqrt(np.sum(w * d ** 2) / np.sum(w)))
                     r[f"bias_{tag}"] = float(np.sum(w * d) / np.sum(w))
+                if Ev is not None:
+                    r["rmse_vsE"] = float(np.sqrt(np.sum(w * (f - Ev) ** 2) / np.sum(w)))
+                r["rmse_own"] = r.get("rmse_vsE", np.nan) if is_era5_world(a) else r["rmse_back"]
+                r["own_truth"] = "ERA5" if is_era5_world(a) else "MERRA-2"
                 aF = fb - cM
                 den = np.sqrt(np.sum(w * aF ** 2) * np.sum(w * aM ** 2))
                 r["acc_M"] = float(np.sum(w * aF * aM) / den) if den > 0 else np.nan
@@ -131,6 +148,18 @@ def main(fields, clim_e, clim_p, template=None, out=None, leads_show=(0, 6, 12, 
                 print(tab(key, "bias_back", 2))
             print(f"{lab}: ACC vs MERRA-2 anomalies")
             print(tab(key, "acc_M", 3))
+
+    if not quiet and "rmse_own" in S:
+        print("\n" + "=" * 76)
+        print("OWN-WORLD SKILL: each start scored against its own reanalysis")
+        print("   ERA5-world arms (ERA5, BASE, HYB72-DIR, E+DM*) vs ERA5 (raw); MERRA-2 arms vs MERRA-2 (back-mapped).")
+        print("   E+DM<lag> = ERA5 + a MERRA-2-sized difference from another time: if it grows like the MERRA-2")
+        print("   starts, MERRA-2 - ERA5 differences act like ordinary analysis errors; if the MERRA-2 starts grow")
+        print("   faster, the MERRA-2 states are foreign to GraphCast.")
+        for key, _, _, lab, unit in SPECS:
+            if key in ("t2m_conus", "mslp_terrain", "t850_nhx", "z500_nhx", "z500_down") and key in set(S.field):
+                print(f"\n{lab}: RMSE vs own reanalysis ({unit})")
+                print(tab(key, "rmse_own", 3 if unit == "K" else 2))
 
     fl = [s for s in SPECS if s[0] in ("t2m_conus", "mslp_terrain", "t850_nhx", "z500_nhx") and s[0] in set(S.field)]
     if fl:
