@@ -1287,3 +1287,37 @@ REPLAY72-MQM and HYB72-MQM are within a few percent of M-QM throughout. The stat
 - The MERRA-2 start grows faster than E + Δ → something specific to MERRA-2 states: (b).
 
 Multi-date runs are also needed before this is a result.
+
+---
+
+## 31. Is MERRA-2 "foreign" to GraphCast, or just a different (less accurate) analysis? (`isd_merra2_v2` run)
+
+New arms:
+- **E+DM24:** the ERA5 start plus the MERRA-2 − ERA5 anomaly difference from 24 h earlier (same hour, climatological offset removed). It is a perturbation of MERRA-2 size and structure that is not today's.
+- **M-QMS:** QM only for the surface fields and 1000–850 hPa, mean shift above.
+- **M-BAL:** M-QMS with geopotential rebuilt from the mapped virtual temperature, anchored at 1000 hPa.
+
+### 31.1 Own-world error growth (each start vs its own reanalysis)
+| Z500, N America–Atlantic (m) | t0 | 6 h | 12 h | 24 h | 48 h | 72 h |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| ERA5 start vs ERA5 | 0 | 2.7 | 3.7 | 4.9 | 12.1 | 20.5 |
+| **E+DM24 vs ERA5** | 4.0 | 4.9 | 7.1 | 9.8 | 18.8 | 30.7 |
+| M-DIR vs MERRA-2 (raw) | 0 | 3.7 | 5.5 | 8.8 | 17.0 | 26.6 |
+| M-QM vs MERRA-2 (back-mapped, §30) | 0 | 3.5 | 5.6 | 8.4 | 17.0 | 29.5 |
+
+T850 CONUS at 72 h: E+DM24 vs ERA5 2.28 K; M-QM vs MERRA-2 about 2.0 K; ERA5 vs ERA5 1.29 K.
+
+Stations (% vs the ERA5 start, withheld, 6 / 12 / 24 / 48 / 72 h): E+DM24 +17 / +10 / +9 / +10 / +13 (all *), M-QM +12 / +10 / +10 / +8 / +11.
+
+### 31.2 Interpretation
+- **An ERA5 start perturbed by a MERRA-2-sized difference degrades as much as starting from MERRA-2**, both at the stations and in its own world. Its error grows at least as fast as the MERRA-2 starts'. GraphCast is not rejecting MERRA-2 states in particular. **The MERRA-2 penalty is what an initial-condition difference of that size costs** (explanation (a) in §30.3: analysis quality relative to ERA5), not out-of-distribution dynamics (b).
+- Caveat: E+DM24's perturbation is yesterday's difference placed on today's flow, so it is not flow-consistent and may grow somewhat faster than a real analysis error. That makes it an upper-end test. The result is still that MERRA-2 does not stand out.
+- **Restoring balance gives little:** M-QMS ≈ M-QM. M-BAL is the best of the direct MERRA-2 arms at 72 h (withheld +9.7 % vs +11.1 %; USCRN +4.9 % n.s.; Z500 downstream 28.2 vs 29.4 m), but these are small, single-case differences. The 13-level hypsometric rebuild also adds ~3–7 m Z errors at t0 (the t0 hypsometric residual goes from 2.6 to 3.7 m). Rebuilding only the QM-induced part of Z would avoid that.
+
+### 31.3 Consequence for "retaining MERRA-2 information without retraining"
+Since the penalty behaves like ordinary analysis error, a better mapping cannot remove it. What helps is what reduces or averages initial-condition error:
+1. Own observations on top of the foreign base (HYB72-MQM is the best MERRA-2 arm).
+2. Ensembles or multi-analysis averaging (e.g. mapped MERRA-2 + another centre's analysis) to damp the 48–72 h error growth.
+3. Hindcast-based lead-dependent back-mapping, for the systematic part.
+
+4D-Var trajectory fitting to MERRA-2 is less promising: there is no special "foreignness" to project out.
