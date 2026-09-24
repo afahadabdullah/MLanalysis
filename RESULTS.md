@@ -1255,3 +1255,35 @@ The 4D-Var arms were left out of this run.
 1. **Multiple dates** (winter and summer, 4–8 cases): the effects are now a few percent, so one case cannot separate them.
 2. **Cheap variants:** map only the 2-D fields (keep MERRA-2's upper air raw), and use the same-hour climatology for both input frames. These check the Z500 day-3 loss and the 24 h dip.
 3. **Upper-air/large-scale-only replay toward MERRA-2**, and HYB72-4DV-MQM, once the cheaper tests are in.
+
+---
+
+## 30. Can a MERRA-2 start predict MERRA-2? (truth = raw MERRA-2 analysis; `scripts/score_anomalies.py` on the `isd_merra2_anom` run)
+
+Every forecast is scored against the raw MERRA-2 analysis at the valid time. For a fair comparison, forecasts are **back-mapped** into MERRA-2's climate with the inverse of each arm's input mapping: QM arms use F* = clim_M + (F − clim_E)·σ_M/σ_E, and all others (including the ERA5 start) use F* = F − clim_E + clim_M. M-MEAN and M-QM therefore start with zero error. The competitor is the ERA5-started forecast, mapped the same way.
+
+### 30.1 RMSE vs MERRA-2, back-mapped: M-QM vs the ERA5 start (% = M-QM relative to ERA5 start)
+| Field | 6 h | 12 h | 24 h | 48 h | 72 h |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 2 m T, CONUS land (K) | 1.14 vs 1.56 (−27 %) | 1.66 vs 2.23 (−25 %) | 1.92 vs 2.16 (−11 %) | 2.16 vs 2.12 (+2 %) | 2.05 vs 1.92 (+7 %) |
+| MSLP, CONUS land (hPa) | 0.92 vs 1.95 (−53 %) | 1.35 vs 2.33 (−42 %) | 1.89 vs 2.99 (−37 %) | 2.63 vs 2.06 (+28 %) | 2.04 vs 2.09 (−2 %) |
+| T850, NH 20–90N (K) | 0.71 vs 1.15 (−38 %) | 0.99 vs 1.17 (−15 %) | 1.20 vs 1.18 (+2 %) | 1.46 vs 1.28 (+14 %) | 1.77 vs 1.58 (+12 %) |
+| Z500, NH 20–90N (m) | 3.9 vs 5.2 (−25 %) | 5.7 vs 5.5 (+4 %) | 9.0 vs 6.5 (+38 %) | 15.3 vs 11.6 (+32 %) | 22.1 vs 18.6 (+18 %) |
+
+REPLAY72-MQM and HYB72-MQM are within a few percent of M-QM throughout. The stations pull 2 m T slightly away from MERRA-2 at 6 h (1.28 vs 1.13 K), as expected, since they are information MERRA-2 does not have.
+
+### 30.2 Findings
+1. **Mapping in and out is essential.** The raw M-DIR forecast, not mapped, predicts MERRA-2's 2 m T worse than the back-mapped ERA5 start from 12 h on (2.59 vs 2.23 K). The model drifts into ERA5's climate, so the MERRA-2 identity has to be restored at the output. M-QM (variance mapping) beats M-MEAN from 12 h on.
+2. **A foreign start carries its own weather for about a day near the surface and 6–12 h aloft.** With QM mapping, the MERRA-2 start beats the ERA5 start at predicting MERRA-2 by 25–53 % at 6–12 h (2 m T, MSLP, T850) and by 11–37 % at 24 h near the surface.
+3. **Beyond that, the ERA5 start predicts MERRA-2's own analyses better than the MERRA-2 start does.** Z500 NH is +38 % worse for the MERRA-2 start at 24 h, +32 % at 48 h, +18 % at 72 h. T850 NH is +12–14 % worse at 48–72 h. The 2 m T bias vs MERRA-2 stays near zero for M-QM (−0.4 to +0.1 K) against −0.3 to −1.1 K for the back-mapped ERA5 start, but that does not keep its RMSE lower past 24 h.
+4. **"Own-world" skill.** GraphCast forecasts MERRA-2's world with faster error growth than ERA5's world. Z500 downstream RMSE of each start against its own analysis: 3.5 / 5.6 / 8.4 / 17.0 / 29.5 m (M-QM vs MERRA-2) against 2.7 / 3.7 / 4.9 / 12.1 / 20.5 m (ERA5 start vs ERA5) at 6 / 12 / 24 / 48 / 72 h. That is about 1.4–1.7× faster.
+
+### 30.3 Two explanations to separate next
+- **(a) Analysis quality:** MERRA-2 has larger analysis errors than ERA5 (3D-Var + IAU at 0.5° vs 4D-Var at 0.25°). Any model's forecasts from it would diverge faster, even against MERRA-2's own later analyses.
+- **(b) Out-of-distribution dynamics:** GraphCast learned ERA5's balances. From a MERRA-2 state its large-scale error grows faster because the state is dynamically foreign. This is the large-scale analogue of initialization shock, and it is invisible in the first-step 2 m T jump.
+
+**Planned test:** a perturbed-ERA5 arm, E + Δ, where Δ = MERRA-2 − ERA5 from another time (e.g. t0 − 24 h, same hour), scored against ERA5.
+- Its error grows like the MERRA-2 start's → the MERRA-2 − ERA5 differences behave like ordinary analysis errors: (a).
+- The MERRA-2 start grows faster than E + Δ → something specific to MERRA-2 states: (b).
+
+Multi-date runs are also needed before this is a result.
