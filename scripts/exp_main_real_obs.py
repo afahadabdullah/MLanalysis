@@ -35,7 +35,8 @@ ARMS  ERA5 | BASE | BIAS | DIR-1F | DIR-2F | COL-2F | BAL-2F | REG-2F | COL/BAL-
       REPLAY<H>-M / HYB<H>-M  (72 h cycling relaxed to the provider instead of ERA5, without / with stations) |
       HYB<H>-4DV-M (4D-Var on the provider-cycled background);
       with --clim-era5/--clim-provider (anomaly initialization, no retraining):
-      M-MEAN (M - (clim_M - clim_E)) | M-QM (clim_E + (M - clim_M) std_E/std_M) | REPLAY<H>-MQM | HYB<H>-MQM | HYB<H>-4DV-MQM
+      M-MEAN (M - (clim_M - clim_E)) | M-QM (clim_E + (M - clim_M) std_E/std_M) | REPLAY<H>-MQM | HYB<H>-MQM | HYB<H>-4DV-MQM |
+      M-QM+DIR (stations OI-inserted into the mapped pair) | 4DV-MQM (single-shot 4D-Var of the stations on the mapped pair)
   DIR = 2 m T only; COL = + column T from a regression of background error profiles
   on the 2 m error (training region outside CONUS); BAL = COL + hypsometric Z;
   REG = COL + regressed Z; 1F/2F = insert at t0 only / at t0-6h and t0;
@@ -997,6 +998,10 @@ if CLIM_E is not None:
     for _mode in ("MEAN", "QM", "QMS", "BAL"):
         if want(f"M-{_mode}"):
             ARMS[f"M-{_mode}"] = (mapped_frame(I0 - 1, _mode), mapped_frame(I0, _mode))
+if CLIM_E is not None and want("M-QM+DIR"):          # stations (OI, 2 m T) inserted into both mapped frames
+    _qa, _qb = mapped_frame(I0 - 1, "QM"), mapped_frame(I0, "QM")
+    ARMS["M-QM+DIR"] = (apply_increment(_qa, oi_increment(_qa["2m_temperature"], I0 - 1, "mqm-dir"), "DIR"),
+                        apply_increment(_qb, oi_increment(_qb["2m_temperature"], I0, "mqm-dir"), "DIR"))
 if DSP is not None and want(f"E+DM{args.edelta_lag}"):
     if I0 - 1 - args.edelta_lag // 6 < 0 or args.edelta_lag % 24:
         print(f"   E+DM{args.edelta_lag} skipped: lag must be a multiple of 24 h inside the data window")
@@ -1656,6 +1661,8 @@ if _need_jac or _need_4dv:
             _prov_4dv.append(("M", provider_frame))
         if CLIM_E is not None:
             _prov_4dv.append(("MQM", lambda i: mapped_frame(i, "QM")))
+        if CLIM_E is not None and want("4DV-MQM"):      # single-shot 4D-Var of the stations on the mapped MERRA-2 pair
+            ARMS["4DV-MQM"] = fourdvar(mapped_frame(I0 - 2, "QM"), mapped_frame(I0 - 1, "QM"), I0 - 2, tag="4DV-MQM")
         for _suf, _tgt in _prov_4dv:
             if H_ and want(f"HYB{H_}-4DV-{_suf}") and args.hyb_tau > 0:
                 A_E = 1.0 - np.exp(-6.0 / args.hyb_tau)
@@ -1868,7 +1875,7 @@ COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d6
        "M-DIR": "#e7298a", "REPLAY72-M": "#66a61e", "HYB72-M": "#1b9e77",
        "M-MEAN": "#fb9a99", "M-QM": "#e31a1c", "REPLAY72-MQM": "#b2df8a", "HYB72-MQM": "#33a02c",
        "HYB72-4DV-M": "#6a51a3", "HYB72-4DV-MQM": "#3f007d",
-       "M-QMS": "#fdbf6f", "M-BAL": "#ff7f00", "E+DM24": "#737373"}
+       "M-QMS": "#fdbf6f", "M-BAL": "#ff7f00", "E+DM24": "#737373", "M-QM+DIR": "#cab2d6", "4DV-MQM": "#b15928"}
 STY = {"ERA5": "--", "BASE": "--", "FREE72": ":", "FREE48": ":", "FREE120": ":", "REPLAY72": "-.", "REPLAY72-M": "-.",
        "M-DIR": "--"}
 EXT = [230, 300, 20, 55]
