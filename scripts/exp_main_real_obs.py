@@ -2208,6 +2208,9 @@ if args.save_fields:
         import plot_global_maps
         plot_global_maps.make_all(os.path.join(OUT, "fields.nc"), args.clim_era5, args.clim_provider,
                                   arm="M-DIR" if "M-DIR" in ARMS else ("M-QM" if "M-QM" in ARMS else "M-DIR"))
+        if args.clim_era5 and args.clim_provider and DSP is not None:
+            import score_anomalies
+            score_anomalies.main(os.path.join(OUT, "fields.nc"), args.clim_era5, args.clim_provider, DATA)
     except Exception as ex:
         print("   (global maps skipped:", repr(ex)[:200], ")")
 
