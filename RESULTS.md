@@ -1,13 +1,47 @@
-# Experimental Results: GraphCast Synthetic Increment Retention & Sensitivity
+# Experimental Results: Observation Insertion and Foreign-Reanalysis Starts in a Frozen GraphCast
 
 **Project:** Machine Learning Analysis of Boundary-Layer Observation Insertion in Global Atmospheric Models  
 **Facility:** NASA Center for Climate Simulation (NCCS) Prism GPU Cluster (`gpu004`)  
-**Date:** September 17, 2026  
-**Status:** Milestone Validation — Stage S0 Proof-of-Concept
+**Date:** started September 17, 2026; last updated September 24, 2026  
+**Status:** Single-case study complete for station insertion (§16–27) and foreign-reanalysis starts (§28–32); multi-date runs next
 
 ---
 
-> **Current status (21 Sep 2026): read Section 21 (Hybrid Cycling Breakthrough) and Section 22 (0.25° High-Resolution Confirmation).** They present the definitive findings: hybrid cycling (anchored replay + surface station insertion) statistically outperforms raw ERA5 cold-starts at both 1.0° and operational 0.25° resolution across independent verification networks.
+> **Start here:** Section 0 summarizes every finding to date. Details: station insertion §16–27, foreign reanalysis (MERRA-2) §28–32. Sections 1–15 are the early exploratory record and are kept for history.
+
+## 0. Summary of all findings (as of 24 Sep 2026)
+
+All results are from one case: 2018-01-15 12 UTC, frozen GraphCast_small (1°, 13 levels; the 0.25° model was checked in §22), CONUS verification against 652 withheld ISD stations and 120 USCRN stations, bootstrap significance. Multi-date runs are the main open item.
+
+### 0.1 Inserting station observations into GraphCast (ERA5 world)
+| Finding | Evidence | Section |
+|---|---|---|
+| Direct single-frame insertion shocks the model | DIR-1F: best t0 station fit but +1.9 % vs BASE at +6 h, +16 %* vs the ERA5 start; worse at 0.25° (+13.6 %* at 72 h) | §21, §26 |
+| Consistency beats closeness | 4DV fits stations less closely at t0 than DIR-1F but beats it at every lead (−4.7 %* vs BASE at 6 h) | §24, §27 |
+| The upper air must be anchored | 72 h free run / surface-only nudging drift aloft (T850 error ≈ 1.9–2.0 K); replaying the full state to ERA5 keeps it at ≈ 0.22 K | §20–21 |
+| Stations add information beyond ERA5 | HYB72-DIR (ERA5 replay + stations) beats the ERA5 start at 24–72 h: −2.7 to −3.6 %* (withheld), −4.3 %* (USCRN); same ranking at 0.25° | §21–22 |
+| Best by lead | HYB72-4DV wins at 6–12 h (−3.1 %* vs ERA5 at 12 h); HYB72-DIR at 24–72 h | §27 |
+| 4D-Var is converged and saturated | L-BFGS reaches the minimum (gradient ↓ ~10⁴); doubling σo hurts; larger or shorter-range B fits closer but does not improve forecasts | §27.4–27.6 |
+| Operational extras do not beat plain HYB72-DIR | Weighted 4DIAU, level-selective replay, station bias correction, JAC balance | §23–24 |
+
+### 0.2 Starting GraphCast from a foreign reanalysis (MERRA-2)
+| Finding | Evidence | Section |
+|---|---|---|
+| A raw MERRA-2 start costs 15–21 % | M-DIR vs the ERA5 start, withheld: +20.9 %* (6 h), +14.9 %* (72 h); worse than BASE | §28 |
+| It is not an initialization shock | M-DIR first-step 2 m T change 6.01 K = ERA5's 6.04 K; replay alone barely helps | §28 |
+| A terrain MSLP artifact | MSLP differs by −4.8 hPa above 1500 m (sea-level reduction); the model keeps it for days | §28 |
+| The model pulls MERRA-2 toward ERA5 | Retention of the MERRA-2 − ERA5 difference: 2 m T 0.42 (6 h) → 0.14 (12 h); Z500 0.47 (12 h) → 0.24 (24 h) | §28 |
+| Anomaly initialization + replay + stations halve the penalty | HYB72-MQM: +3–7 % vs the ERA5 start (withheld); ties it at USCRN (all n.s.) | §29 |
+| To forecast MERRA-2, map in and out | A QM-mapped MERRA-2 start predicts MERRA-2 better than the ERA5 start for ~24 h near the surface and 6–12 h aloft; after that the back-mapped ERA5 start wins | §30 |
+| MERRA-2 is a less accurate start, not a foreign one | ERA5 + a MERRA-2-sized difference (E+DM24) degrades as much as a MERRA-2 start; balance-preserving mappings add little | §31 |
+| Fine-tuning is not the main lever | The penalty behaves like initial-condition error, which retraining does not remove; mapping in/out already handles the climate part | §32 |
+
+### 0.3 Caveats
+- One January case. Summer and multi-date runs are needed before any of this is general.
+- Many withheld ISD stations were probably used by ERA5's land-surface analysis, while MERRA-2 does not assimilate land-station T2m/q2m. So station scores lean toward ERA5, and USCRN is the fairer network (§32).
+- The §26.2 table predates the t0-anchoring fix; the §27 numbers for HYB72-4DV supersede it.
+
+---
 
 ## 1. Executive Summary
 
@@ -1321,3 +1355,52 @@ Since the penalty behaves like ordinary analysis error, a better mapping cannot 
 3. Hindcast-based lead-dependent back-mapping, for the systematic part.
 
 4D-Var trajectory fitting to MERRA-2 is less promising: there is no special "foreignness" to project out.
+
+---
+
+## 32. MERRA-2 synthesis: what we learned about running an ERA5-trained model from a foreign reanalysis
+
+This section combines §28–31 into one set of conclusions (single case, 2018-01-15 12 UTC).
+
+### 32.1 The questions and the answers
+| Question | Answer | Key numbers |
+|---|---|---|
+| Does a MERRA-2 start forecast worse than an ERA5 start? | Yes, clearly | M-DIR +15–21 %* vs the ERA5 start at withheld stations at 6–12 h and 72 h (§28) |
+| Is it initialization shock? | No | First-step 2 m T change 6.01 K vs 6.04 K for ERA5; replay toward MERRA-2 barely helps (§28) |
+| Does the model keep MERRA-2's state? | No, it drifts into ERA5's world | 2 m T / T850 retention ≈ 0.1 by 12 h; Z500 ≈ 0.2 by 24 h; ERA5 daily cycle imposed in one step (§28) |
+| How much is climate mismatch? | Part of it: the MSLP artifact and some near-surface bias | QM mapping cuts terrain MSLP bias −5.9 → −1.3 hPa; station penalty ~halved when combined with replay and stations (§29) |
+| Can a MERRA-2 start predict MERRA-2? | For ~24 h near the surface and 6–12 h aloft, if mapped in and out | M-QM vs back-mapped ERA5 start, RMSE vs MERRA-2: 2 m T −27 % (6 h), −11 % (24 h); Z500 NH −25 % (6 h), +38 % (24 h) (§30) |
+| Is MERRA-2 foreign to GraphCast? | No; it behaves like a less accurate analysis | ERA5 + a MERRA-2-sized difference (E+DM24) degrades as much as a MERRA-2 start (Z500 downstream 72 h: 30.7 vs 26.6–29.5 m) (§31) |
+| Does restoring balance help? | Little | M-QMS ≈ M-QM; M-BAL marginally best at 72 h (+9.7 vs +11.1 %), within noise (§31) |
+
+### 32.2 How we know MERRA-2 was the less accurate start here
+1. **Station fit at t0.** MERRA-2's 2 m T error is 2.53 K vs 1.93 K for ERA5 at withheld ISD stations, and 2.77 vs 2.52 K at USCRN. After climate mapping it is still 2.46 K, so the gap is in that day's analysis.
+2. **Cross-prediction.** Past about 24 h, the ERA5 start predicts MERRA-2's own later analyses better than the MERRA-2 start does. If ERA5 were the worse initial state, the MERRA-2 start would win when MERRA-2 is the truth.
+3. **The difference acts like error.** E+DM24 costs as much skill as switching to MERRA-2. Together with points 1 and 2, the extra error sits mainly on the MERRA-2 side.
+
+This is consistent with MERRA-2's 3D-Var + IAU at 0.5° vs ERA5's 4D-Var at ~0.25°.
+
+**Station neutrality.**
+- MERRA-2 does not assimilate land-station 2 m T or humidity. In GMAO's words, "Neither MERRA or MERRA-2 assimilate surface meteorology station data over land, specifically T2m or q2m" (M. Bosilovich, https://reanalyses.org/atmosphere/merra-2-notes-questions-and-discussion).
+- ERA5's land-surface analysis uses SYNOP/METAR screen-level observations (https://confluence.ecmwf.int/display/CKB/ERA5%3A+data+documentation). So many withheld ISD stations probably informed ERA5.
+- Station scores therefore lean toward ERA5, and USCRN is the fairer network. At USCRN the MERRA-2 gap is smaller but still present. Point 2 above does not depend on stations at all.
+
+### 32.3 Recipe for a foreign analysis without retraining
+1. Map it into ERA5's climate with hour-of-day QM (mean + variance; precipitation mean shift only).
+2. Replay toward the mapped analysis for 72 h and add your own observations (HYB72-MQM).
+3. To forecast in the foreign analysis's frame, map the forecast back (inverse QM).
+
+This recovers about half the station penalty and ties an ERA5 start at USCRN. It predicts the foreign analysis best for about the first day. It cannot remove the remaining gap, which is initial-condition quality.
+
+### 32.4 Is fine-tuning GraphCast on MERRA-2 needed?
+Mostly no, for this purpose.
+- **What fine-tuning would fix:** the climate mismatch (drift toward ERA5, terrain MSLP, daily cycle). Mapping in and out already does this, and lead-dependent output calibration from past forecasts would handle the remaining drift without training.
+- **What it would not fix:** the main penalty. It comes from the less accurate initial state (§31), and retraining the model does not change the initial state.
+- **Where it might still pay:** fields that mean/variance mapping handles poorly (precipitation, boundary layer over complex terrain), and long ranges where accumulated drift matters.
+- **To settle it:** a light fine-tune compared with mapping + calibration on the same dates, only if the multi-date runs still show a gap mapping cannot close.
+
+### 32.5 Next steps
+- [ ] Multi-date runs (4 winter, 4 summer): ERA5, M-QM, HYB72-MQM, E+DM24, HYB72-DIR, with month-specific climatologies
+- [ ] Small ensemble of mapped MERRA-2 starts (does averaging recover 48–72 h upper-air skill?)
+- [ ] Lead-dependent output calibration from 2011–2017 January GraphCast forecasts
+- [ ] Precipitation and vertical-velocity shock analysis for DIR-1F and M-DIR (OPERATIONAL_DA_PLAN §14.6), using the saved `fields.nc`
