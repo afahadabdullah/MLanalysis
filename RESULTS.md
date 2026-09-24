@@ -1217,3 +1217,41 @@ Next tests:
 2. **MSLP recomputed ECMWF-style** from MERRA-2 surface pressure on ERA5 orography (the fix that uses no ERA5 information).
 3. **Anomaly initialization** (M-MEAN / M-QM) with MERRA-2 and ERA5 January climatologies, to remove all systematic differences.
 4. More dates (single case so far).
+
+---
+
+## 29. Anomaly initialization for the MERRA-2 start (1°, 2018-01-15 12 UTC, `isd_merra2_anom` run)
+
+January climatologies for 2011–2017, at 00/06/12/18 UTC and for every GraphCast input, were built with the same processing for both reanalyses (`scripts/build_clim.py`). New arms:
+- **M-MEAN** = M − (clim_M − clim_E)
+- **M-QM** = clim_E + (M − clim_M)·σ_E/σ_M (precipitation: mean shift only)
+- **REPLAY72-MQM / HYB72-MQM**: 72 h replay toward the QM-mapped MERRA-2, without / with ISD stations
+
+The 4D-Var arms were left out of this run.
+
+### 29.1 Stations: % change in 2 m T RMSE vs the ERA5 start (* = significant)
+| Arm | withheld 6 h | 12 h | 24 h | 48 h | 72 h | USCRN 6 h | 12 h | 24 h | 48 h | 72 h |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| M-DIR | +20.9* | +15.9* | +2.9 | +8.4* | +14.9* | +16.9 | +5.6 | +0.5 | +3.6 | +8.0* |
+| M-MEAN | +13.6* | +19.0* | +15.4* | +9.1* | +14.1* | +11.2 | +12.6* | +12.3* | +3.2 | +8.7* |
+| M-QM | +12.2* | +10.2* | +9.8* | +8.1* | +11.1* | +7.4 | +7.3* | +8.0* | +2.3 | +6.1* |
+| REPLAY72-M | +17.3* | +13.1* | +2.6 | +8.8* | +13.9* | +11.9 | +3.6 | −0.5 | +4.7 | +7.5* |
+| REPLAY72-MQM | +7.5* | +4.8* | +6.0* | +7.1* | +8.1* | +3.0 | +1.8 | +4.9 | +2.4 | +3.7 |
+| HYB72-M | +11.5* | +8.3* | −1.1 | +6.2* | +10.8* | −1.6 | −8.6* | −5.3 | +2.8 | +5.7* |
+| **HYB72-MQM** | +7.4* | +5.9* | +2.7 | +3.5* | +5.5* | −1.1 | −4.5 | +1.1 | −0.1 | +2.0 |
+| HYB72-DIR (ERA5 base) | +2.8 | −0.4 | −2.7* | −2.6* | −3.6* | −2.5 | −12.8* | −4.3* | −3.7* | −4.3* |
+
+### 29.2 What the mapping removes and what it does not
+- **The terrain MSLP artifact is mostly removed.** The bias vs ERA5 over CONUS land above 1000 m goes from −5.9 hPa (M-DIR) to −1.3 hPa (M-QM) at t0 and from −3.3 to −1.5 hPa at 72 h. The CONUS MSLP RMSE vs ERA5 falls from 4.1 to 1.5 hPa.
+- **The 2 m T station fit at t0 hardly changes:** withheld 2.53 K (M-DIR) → 2.46 K (M-QM), against 1.93 K for ERA5. Most of MERRA-2's near-surface disadvantage on this day is its anomaly (the analysis of this particular day), not its climate.
+- **Variance mapping matters.** M-MEAN over-warms 2 m T at t0 (bias +0.62 K vs ERA5; M-QM +0.36 K) and is worse than M-DIR at 12–24 h on both networks. M-QM is better than M-DIR at 6–12 h and at 72 h, but worse at 24 h (+9.8 vs +2.9 %).
+- **The large-scale flow does not benefit.** Z500 downstream at 72 h vs ERA5: M-DIR 26.1 m, M-QM 29.4 m, HYB72-MQM 25.3 m, against 20.5 m for the ERA5 start and 18.2 m for HYB72-DIR. T850 at 72 h is unchanged (~1.8–1.9 K vs 1.29 K). The day-3 upper-air penalty is not a climatological offset: it is in MERRA-2's analysis of this flow, or in how GraphCast grows errors from it.
+- **The mapped starts have a smaller first-step 2 m T change** (5.4–5.5 K vs 6.0 K for ERA5 and M-DIR). The mapping applies different hour-of-day climatology differences to the t0−6h and t0 frames, which alters the tendency the model sees. This is a possible reason for the 24 h dip. A test that maps both frames with the t0 hour is worth doing.
+
+### 29.3 Best foreign-analysis configuration so far
+**HYB72-MQM** (replay toward QM-mapped MERRA-2 plus ISD stations) roughly halves the MERRA-2 penalty. Withheld stations go from +15–21 % to +3–7 % vs the ERA5 start. **At USCRN it is statistically indistinguishable from the ERA5 start at every lead** (−4.5 to +2.0 %, all n.s.). It still trails the ERA5-based HYB72-DIR (−3 to −4 % vs ERA5). Ranking of the tools for a foreign analysis: climatology mapping (removes the artifact) + replay (model consistency) + own stations (information). Each step helps, and together they get close to the ERA5 start but not beyond it in this case.
+
+### 29.4 Next
+1. **Multiple dates** (winter and summer, 4–8 cases): the effects are now a few percent, so one case cannot separate them.
+2. **Cheap variants:** map only the 2-D fields (keep MERRA-2's upper air raw), and use the same-hour climatology for both input frames. These check the Z500 day-3 loss and the 24 h dip.
+3. **Upper-air/large-scale-only replay toward MERRA-2**, and HYB72-4DV-MQM, once the cheaper tests are in.
