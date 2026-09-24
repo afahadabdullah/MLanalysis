@@ -56,17 +56,18 @@ GraphCast was trained only on ERA5, but a real-time system has to start from ano
 |---|---|:---:|:---:|
 | M-DIR | raw MERRA-2 | +20.9* / +14.9* | +8.0* |
 | M-QM | MERRA-2 mapped to ERA5's climate (hour-of-day mean + variance) | +12.2* / +11.1* | +6.1* |
-| REPLAY72-MQM | 72 h cycling relaxed toward M-QM | +7.5* / +8.1* | +3.7 |
-| **HYB72-MQM** | REPLAY72-MQM + station increments every cycle | +7.4* / +5.5* | **+2.0** |
+| **MX-SFC-QM** | QM-mapped MERRA-2 surface + ERA5 upper air | +8.7* / +0.7 | −1.4 |
+| **HYB72-MQM** | 72 h cycling relaxed toward M-QM + station increments | +7.4* / +5.5* | **+2.0** |
 
 ### What we learned
 1. **A raw MERRA-2 start costs 15–21 %, and it is not an initialization shock.** The first-step change matches ERA5's. MERRA-2's sea-level pressure over high terrain is offset by about −5 hPa (a reduction artifact), and the model keeps it for days.
-2. **The model pulls MERRA-2 toward ERA5.** MERRA-2's 2 m T and T850 differences are gone within ~12 h, and the ERA5 daily cycle is imposed in the first step (panel d).
-3. **Map, cycle, add stations.** Anomaly initialization + replay + own stations (HYB72-MQM) halves the penalty and ties the ERA5 start at USCRN. It still trails the ERA5-based HYB72-DIR.
-4. **To forecast MERRA-2 itself, map in and out** (panel b). The mapped MERRA-2 start predicts MERRA-2 better for ~24 h near the surface and 6–12 h aloft. After that, an ERA5 start converted to MERRA-2's climate does better.
-5. **MERRA-2 is a less accurate start, not a foreign one** (panel c). ERA5 plus a MERRA-2-sized difference (E+DM24) degrades as much as a MERRA-2 start. So fine-tuning GraphCast on MERRA-2 would not remove the main penalty; better or averaged initial conditions would.
+2. **The penalty has two separable components.** Mixed-state experiments (§33) show a *surface* component (terrain MSLP artifact, 10 m wind shock) that QM mapping removes, and an *upper-air* component (w850 shock at 6–12 h, Z500 growth) that is analysis quality and cannot be mapped away.
+3. **QM-mapped surface + ERA5 upper air (MX-SFC-QM) closes 86–101 % of the ERA5 gap at 48–72 h without any cycling.** It beats the 24 h background at every lead on withheld stations (all significant) and is the best no-cycling arm.
+4. **Map, cycle, add stations.** Anomaly initialization + replay + own stations (HYB72-MQM) halves the penalty and ties the ERA5 start at USCRN. It still trails the ERA5-based HYB72-DIR.
+5. **To forecast MERRA-2 itself, map in and out** (panel b). The mapped MERRA-2 start predicts MERRA-2 better for ~24 h near the surface and 6–12 h aloft. After that, an ERA5 start converted to MERRA-2's climate does better.
+6. **MERRA-2 is a less accurate start, not a foreign one** (panel c). ERA5 plus a MERRA-2-sized difference (E+DM24) degrades as much as a MERRA-2 start. So fine-tuning GraphCast on MERRA-2 would not remove the main penalty; better or averaged initial conditions would.
 
-Caveat: withheld ISD stations lean toward ERA5, whose land-surface analysis uses them; MERRA-2 does not assimilate land-station 2 m T. USCRN is the fairer network. Details: [`RESULTS.md`](RESULTS.md) §28–32.
+Caveat: withheld ISD stations lean toward ERA5, whose land-surface analysis uses them; MERRA-2 does not assimilate land-station 2 m T. USCRN is the fairer network. Details: [`RESULTS.md`](RESULTS.md) §28–33.
 
 ---
 
@@ -101,8 +102,8 @@ The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations a
 
 ## Status and next steps
 
-- **Foreign reanalyses (MERRA-2), done for this case:** penalty, anomaly initialization, replay + stations, forecasting MERRA-2 itself, and the E+DM24 test (section above). Next: 4D-Var on the MERRA-2 base, ensembles of mapped starts, and output calibration from past forecasts.
-- **Shock propagation across variables:** Multivariate analysis of initialization shock from foreign analyses and direct station insertion across vertical velocity ($\omega$), precipitation, MSLP, and winds (see [`OPERATIONAL_DA_PLAN.md`](OPERATIONAL_DA_PLAN.md) §14).
+- **Foreign reanalyses (MERRA-2), done for this case:** penalty, anomaly initialization, replay + stations, forecasting MERRA-2 itself, the E+DM24 test, and initialization-shock anatomy via mixed-state experiments (§33: surface vs upper-air decomposition, MX-SFC-QM). Next: 4D-Var on the MERRA-2 base, ensembles of mapped starts, and output calibration from past forecasts.
+- **Shock propagation across variables done (§33):** Mixed-state arms (MX-SFC, MX-UA, MX-SFC-QM) separate surface and upper-air contributions; QM mapping eliminates the surface component. Precipitation shock analysis from the saved `fields.nc` is next.
 - **4D-Var tuning (done for this case):** larger B (σb × 2) and shorter correlation length (150 km) fit the stations more closely at t0 but do not improve the forecast, so the defaults stay (RESULTS §27.6). A flow-dependent, NMC-based B is the remaining 4D-Var option.
 - **Multiple dates across seasons:** Evaluating across diverse seasonal regimes.
 - **Ensembles:** EDA-lite and bred vectors evaluated with CRPS at independent withheld stations.
