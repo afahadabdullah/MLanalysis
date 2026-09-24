@@ -66,7 +66,7 @@ The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations a
 | Path | Contents |
 |---|---|
 | `scripts/exp_main_real_obs.py` | Main experiment: QC, OI, all insertion arms (DIR/COL/BAL/PBL, IAU, nudging, replay/hybrid cycling, JAC, 4D-Var), forecasts, verification, plots |
-| `scripts/download_*.py` | ERA5 (1° and 0.25°), ISD-Lite, USCRN downloaders |
+| `scripts/download_*` | ERA5 (1° and 0.25°), ISD-Lite, USCRN, MERRA-2 (`download_merra2.sh`) downloaders |
 | `scripts/plot_*.py` | Synthesis figures in `docs/figs/` (`plot_readme_summary.py` makes the figure above) |
 | `scripts/test_*.py`, `exp0_*` | Earlier exploratory experiments (retention, balance, IAU, twin/OSSE tests; RESULTS §1–17) |
 | `RESULTS.md` | Full log of results and reviews |
