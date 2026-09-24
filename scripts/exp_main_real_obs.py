@@ -37,6 +37,8 @@ ARMS  ERA5 | BASE | BIAS | DIR-1F | DIR-2F | COL-2F | BAL-2F | REG-2F | COL/BAL-
       with --clim-era5/--clim-provider (anomaly initialization, no retraining):
       M-MEAN (M - (clim_M - clim_E)) | M-QM (clim_E + (M - clim_M) std_E/std_M) | REPLAY<H>-MQM | HYB<H>-MQM | HYB<H>-4DV-MQM |
       M-QM+DIR (stations OI-inserted into the mapped pair) | 4DV-MQM (single-shot 4D-Var of the stations on the mapped pair)
+      shock tests (imbalanced mixed states): MX-SFC (MERRA-2 surface on ERA5 upper air, both frames) | MX-SFC-1F (t0 frame
+      only) | MX-SFC-QM (QM-mapped MERRA-2 surface) | MX-UA (ERA5 surface on MERRA-2 upper air)
   DIR = 2 m T only; COL = + column T from a regression of background error profiles
   on the 2 m error (training region outside CONUS); BAL = COL + hypsometric Z;
   REG = COL + regressed Z; 1F/2F = insert at t0 only / at t0-6h and t0;
@@ -1002,6 +1004,29 @@ if CLIM_E is not None and want("M-QM+DIR"):          # stations (OI, 2 m T) inse
     _qa, _qb = mapped_frame(I0 - 1, "QM"), mapped_frame(I0, "QM")
     ARMS["M-QM+DIR"] = (apply_increment(_qa, oi_increment(_qa["2m_temperature"], I0 - 1, "mqm-dir"), "DIR"),
                         apply_increment(_qb, oi_increment(_qb["2m_temperature"], I0, "mqm-dir"), "DIR"))
+# --- initialization-shock arms: surface from MERRA-2 on an ERA5 column (and the reverse) -------------
+SFC_VARS = [v for v in ("2m_temperature", "mean_sea_level_pressure", "10m_u_component_of_wind",
+                        "10m_v_component_of_wind", "total_precipitation_6hr") if v in STATE_VARS]
+
+
+def mix_frame(upper, surface):
+    """State with the surface fields of `surface` and the pressure-level fields of `upper`
+    (deliberately imbalanced: MSLP/2 m T/10 m wind no longer match the column above)."""
+    return {v: np.array(surface[v] if v in SFC_VARS else upper[v], dtype=np.float32) for v in STATE_VARS}
+
+
+if DSP is not None:
+    if want("MX-SFC"):       # MERRA-2 surface on ERA5 upper air, both frames
+        ARMS["MX-SFC"] = (mix_frame(era5_frame(I0 - 1), provider_frame(I0 - 1)),
+                          mix_frame(era5_frame(I0), provider_frame(I0)))
+    if want("MX-SFC-1F"):    # same, t0 frame only (adds a false tendency between the two input frames)
+        ARMS["MX-SFC-1F"] = (era5_frame(I0 - 1), mix_frame(era5_frame(I0), provider_frame(I0)))
+    if want("MX-UA"):        # reverse: ERA5 surface on MERRA-2 upper air
+        ARMS["MX-UA"] = (mix_frame(provider_frame(I0 - 1), era5_frame(I0 - 1)),
+                         mix_frame(provider_frame(I0), era5_frame(I0)))
+    if CLIM_E is not None and want("MX-SFC-QM"):   # QM-mapped MERRA-2 surface: imbalance without the climate offset
+        ARMS["MX-SFC-QM"] = (mix_frame(era5_frame(I0 - 1), mapped_frame(I0 - 1, "QM")),
+                             mix_frame(era5_frame(I0), mapped_frame(I0, "QM")))
 if DSP is not None and want(f"E+DM{args.edelta_lag}"):
     if I0 - 1 - args.edelta_lag // 6 < 0 or args.edelta_lag % 24:
         print(f"   E+DM{args.edelta_lag} skipped: lag must be a multiple of 24 h inside the data window")
@@ -1875,7 +1900,8 @@ COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d6
        "M-DIR": "#e7298a", "REPLAY72-M": "#66a61e", "HYB72-M": "#1b9e77",
        "M-MEAN": "#fb9a99", "M-QM": "#e31a1c", "REPLAY72-MQM": "#b2df8a", "HYB72-MQM": "#33a02c",
        "HYB72-4DV-M": "#6a51a3", "HYB72-4DV-MQM": "#3f007d",
-       "M-QMS": "#fdbf6f", "M-BAL": "#ff7f00", "E+DM24": "#737373", "M-QM+DIR": "#cab2d6", "4DV-MQM": "#b15928"}
+       "M-QMS": "#fdbf6f", "M-BAL": "#ff7f00", "E+DM24": "#737373", "M-QM+DIR": "#cab2d6", "4DV-MQM": "#b15928",
+       "MX-SFC": "#a50f15", "MX-SFC-1F": "#fb6a4a", "MX-SFC-QM": "#fcae91", "MX-UA": "#08519c"}
 STY = {"ERA5": "--", "BASE": "--", "FREE72": ":", "FREE48": ":", "FREE120": ":", "REPLAY72": "-.", "REPLAY72-M": "-.",
        "M-DIR": "--"}
 EXT = [230, 300, 20, 55]
@@ -2121,6 +2147,68 @@ for _ref in ("BASE", "ERA5"):
 # Two-truth verification (with --provider-file): does a forecast started from the foreign analysis
 # keep forecasting the foreign analysis, or does the ERA5-trained model pull it toward ERA5?
 # ---------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------
+# Initialization-shock diagnostics: size of each 6 h change relative to the ERA5-started forecast,
+# for several variables (a shocked state adjusts faster than a balanced one in the first steps)
+# ---------------------------------------------------------------------------------------------
+def _shock_field(fr, key):
+    if key == "ws10":
+        if "10m_u_component_of_wind" not in fr:
+            return None
+        return np.hypot(fr["10m_u_component_of_wind"], fr["10m_v_component_of_wind"])
+    v, lev = {"mslp": ("mean_sea_level_pressure", None), "t2m": ("2m_temperature", None),
+              "w850": ("vertical_velocity", L850), "t850": ("temperature", L850),
+              "z500": ("geopotential", L500), "tp6h": ("total_precipitation_6hr", None)}[key]
+    if v not in fr:
+        return None
+    return np.asarray(fr[v][lev] if lev is not None else fr[v], np.float64)
+
+
+if not args.lite and "ERA5" in ARMS:
+    try:
+        GLOB = np.ones_like(COSW, bool)
+        SH = []
+        for a in ARMS:
+            frames = [ARMS[a][1]] + [pred_frame(FC[a], k) for k in range(len(LEADS))]
+            frE = [ARMS["ERA5"][1]] + [pred_frame(FC["ERA5"], k) for k in range(len(LEADS))]
+            for key in ("mslp", "w850", "ws10", "t2m", "t850", "z500"):
+                for reg, msk in (("global", GLOB), ("conus", CONUS)):
+                    for k in range(1, len(frames)):
+                        x1, x0 = _shock_field(frames[k], key), _shock_field(frames[k - 1], key)
+                        e1, e0 = _shock_field(frE[k], key), _shock_field(frE[k - 1], key)
+                        if x1 is None:
+                            continue
+                        ra, re_ = wrms(x1 - x0, msk), wrms(e1 - e0, msk)
+                        SH.append(dict(arm=a, var=key, region=reg, step=f"{LEADS[k-1]-6}-{LEADS[k-1]}h",
+                                       lead_h=LEADS[k - 1], ratio=ra / re_ if re_ > 0 else np.nan))
+            for reg, msk in (("global", GLOB), ("conus", CONUS)):          # precipitation spin-up / spin-down
+                for k in range(1, len(frames)):
+                    x, e = _shock_field(frames[k], "tp6h"), _shock_field(frE[k], "tp6h")
+                    if x is None:
+                        continue
+                    w = COSW * msk
+                    me = np.sum(w * e) / np.sum(w)
+                    SH.append(dict(arm=a, var="tp6h_mean", region=reg, step=f"{LEADS[k-1]-6}-{LEADS[k-1]}h",
+                                   lead_h=LEADS[k - 1], ratio=(np.sum(w * x) / np.sum(w)) / me if me > 0 else np.nan))
+        SH = pd.DataFrame(SH)
+        SH.to_csv(os.path.join(OUT, "shock_index.csv"), index=False)
+        print("\n" + "=" * 76)
+        print("INITIALIZATION SHOCK INDEX: RMS of each 6 h change / the same for the ERA5-started forecast")
+        print("   > 1 in the first steps = the state adjusts faster than a balanced start (shock); 1 = like ERA5.")
+        print("   tp6h_mean = mean 6 h precipitation / ERA5 start's (spin-up > 1, spin-down < 1).")
+        _steps = [l for l in (6, 12, 18, 24, 48) if l in LEADS]
+        for key, reg in (("mslp", "global"), ("w850", "global"), ("ws10", "global"), ("t2m", "conus"),
+                         ("w850", "conus"), ("z500", "global"), ("tp6h_mean", "global"), ("tp6h_mean", "conus")):
+            sub = SH[(SH["var"] == key) & (SH.region == reg) & SH.lead_h.isin(_steps)]
+            if sub.empty:
+                continue
+            t = sub.pivot(index="arm", columns="step", values="ratio")
+            t = t[[f"{l-6}-{l}h" for l in _steps if f"{l-6}-{l}h" in t.columns]]
+            print(f"\n{key} ({reg})")
+            print(t.loc[[a for a in ORDER if a in t.index]].round(2).to_string())
+    except Exception as ex:
+        print("   (shock index skipped:", repr(ex)[:200], ")")
+
 if DSP is not None:
     TERR = CONUS_LAND & (ZSFC > 1000.0 * G)
     SPECS = [("t2m", "2m_temperature", None, CONUS_LAND, 1.0, "K"),
@@ -2229,6 +2317,7 @@ if DSP is not None:
 if args.save_fields:
     try:
         _FV = {"t2m": ("2m_temperature", None, 1.0), "mslp": ("mean_sea_level_pressure", None, 100.0),
+               "w850": ("vertical_velocity", L850, 1.0), "ws10": ("ws10", None, 1.0),
                "t850": ("temperature", L850, 1.0), "z500": ("geopotential", L500, G),
                "tp6h": ("total_precipitation_6hr", None, 1e-3)}
         _L0 = [0] + LEADS
@@ -2236,6 +2325,9 @@ if args.save_fields:
         FDS = xr.Dataset(coords=dict(arm=_anames, lead_h=np.array(_L0, np.int32), lat=LATS, lon=LONS))
 
         def _get(fr, v, lev):
+            if v == "ws10":
+                return None if "10m_u_component_of_wind" not in fr else \
+                    np.hypot(fr["10m_u_component_of_wind"], fr["10m_v_component_of_wind"]).astype(np.float32)
             if v not in fr:
                 return None
             x = fr[v][lev] if lev is not None else fr[v]

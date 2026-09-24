@@ -39,7 +39,7 @@ except Exception:
     HAS_CARTOPY = False
 
 FIELDS = [("mslp", "MSLP", "hPa"), ("t2m", "2 m T", "K"), ("t850", "T850", "K"), ("z500", "Z500", "m"),
-          ("tp6h", "6 h precip", "mm")]
+          ("tp6h", "6 h precip", "mm")]   # fields.nc may also hold w850 (Pa/s) and ws10 (m/s), used by fig15
 CLIM_VARS = {"mslp": ("mean_sea_level_pressure", None, 100.0), "t2m": ("2m_temperature", None, 1.0),
              "t850": ("temperature", 850, 1.0), "z500": ("geopotential", 500, 9.80665),
              "tp6h": ("total_precipitation_6hr", None, 1e-3)}
@@ -175,11 +175,58 @@ def fig_clim_difference(clim_e, clim_m, out):
     print("   ✓", os.path.basename(p))
 
 
+def fig_shock_maps(ds, out):
+    """Where each imbalanced start adjusts: rows = arms, columns = the change of the arm - ERA5-start MSLP
+    difference over the first 6 h, and the arm - ERA5-start difference of omega850, 6 h precipitation and
+    10 m wind at +6 h (+ omega850 at +24 h)."""
+    pref = ["DIR-1F", "MX-SFC-1F", "MX-SFC", "MX-SFC-QM", "MX-UA", "M-DIR", "M-QM"]
+    arms = [a for a in pref if a in ds.arm.values][:6]
+    if not arms or "ERA5" not in ds.arm.values or 6 not in ds.lead_h.values:
+        print("   (fig15 skipped: needs ERA5 and at least one shock/foreign arm)")
+        return
+    lat, lon = ds.lat.values, ds.lon.values
+
+    def d(k, a, L):
+        return (ds[k].sel(arm=a, lead_h=L) - ds[k].sel(arm="ERA5", lead_h=L)).values
+
+    cols = []
+    if "mslp" in ds:
+        cols.append(("MSLP: change of (arm - ERA5) over 0-6 h", "hPa", lambda a: d("mslp", a, 6) - d("mslp", a, 0)))
+    if "w850" in ds:
+        cols.append(("omega850: arm - ERA5 at +6 h", "Pa/s", lambda a: d("w850", a, 6)))
+    if "tp6h" in ds:
+        cols.append(("6 h precip: arm - ERA5 at +6 h", "mm", lambda a: d("tp6h", a, 6)))
+    if "ws10" in ds:
+        cols.append(("10 m wind speed: arm - ERA5 at +6 h", "m/s", lambda a: d("ws10", a, 6)))
+    if "w850" in ds and 24 in ds.lead_h.values:
+        cols.append(("omega850: arm - ERA5 at +24 h", "Pa/s", lambda a: d("w850", a, 24)))
+    if not cols:
+        return
+    fig = plt.figure(figsize=(3.9 * len(cols), 2.8 * len(arms) + 1.0))
+    for c, (title, unit, fn) in enumerate(cols):
+        fields = [fn(a) for a in arms]
+        vmax = _lim(*fields)
+        col_axes = []
+        for r, (a, f) in enumerate(zip(arms, fields)):
+            ax, kw = _axes(fig, len(arms), len(cols), r * len(cols) + c + 1)
+            im = _draw(ax, kw, lat, lon, f, vmax)
+            ax.set_title(f"{a}: {title}\nglobal rms {_rms(f, lat):.3g} {unit}", fontsize=7.5)
+            col_axes.append(ax)
+        cb = fig.colorbar(im, ax=col_axes, shrink=0.6, pad=0.02, orientation="horizontal", aspect=30)
+        cb.set_label(unit, fontsize=8)
+    fig.suptitle("Initialization shock: where each start adjusts in the first hours (differences from the "
+                 "ERA5-started forecast)", fontsize=11)
+    p = os.path.join(out, "fig15_shock_maps.png")
+    fig.savefig(p, dpi=105, bbox_inches="tight"); plt.close(fig)
+    print("   ✓", os.path.basename(p))
+
+
 def make_all(fields_nc, clim_era5=None, clim_provider=None, arm="M-DIR", out=None):
     ds = xr.open_dataset(fields_nc)
     out = out or os.path.dirname(os.path.abspath(fields_nc))
     fig_difference_propagation(ds, out, arm=arm)
     fig_skill_maps(ds, out)
+    fig_shock_maps(ds, out)
     if clim_era5 and clim_provider:
         fig_clim_difference(clim_era5, clim_provider, out)
     ds.close()
