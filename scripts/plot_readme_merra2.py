@@ -18,15 +18,16 @@ BLUE, ORANGE, AQUA, YELLOW, MAGENTA = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"
 NEU, NEU2 = "#52514e", "#8f8e89"
 
 # a) % vs ERA5 start, withheld ISD: (mean, lo, hi)
+# a) % vs ERA5 start, withheld ISD: (mean, lo, hi)
 STN = {
-    "M-DIR": ([20.9, 15.9, 2.9, 8.4, 14.9], MAGENTA),
-    "M-QM": ([12.2, 10.2, 9.8, 8.1, 11.1], ORANGE),
-    "MX-SFC-QM": ([8.7, 3.4, 0.8, -2.0, 0.7], YELLOW),
-    "HYB72-MQM": ([7.4, 5.9, 2.7, 3.5, 5.5], BLUE),
-    "HYB72-DIR (ERA5)": ([2.8, -0.4, -2.7, -2.6, -3.6], NEU2),
+    "M-DIR": ([20.9, 15.9, 2.9, 8.4, 14.9], MAGENTA, "-"),
+    "M-QM": ([12.2, 10.2, 9.8, 8.1, 11.1], ORANGE, "-"),
+    "REPLAY72-MQM": ([7.5, 4.8, 6.0, 7.1, 8.1], AQUA, "-"),
+    "HYB72-MQM": ([7.4, 5.9, 2.7, 3.5, 5.5], BLUE, "-"),
+    "MX-SFC-QM (ablation)": ([8.7, 3.4, 0.8, -2.0, 0.7], YELLOW, ":"),
+    "HYB72-DIR (ERA5)": ([2.8, -0.4, -2.7, -2.6, -3.6], NEU2, "--"),
 }
 HYB_CI = ([3.3, 1.8, -0.2, 0.9, 2.0], [11.6, 10.5, 5.7, 6.8, 9.6])
-MXQM_CI = ([5.3, -0.2, -2.4, -3.6, -0.8], [12.0, 6.8, 3.6, -0.4, 2.3])
 # b) M-QM vs ERA5 start, RMSE vs MERRA-2 (back-mapped), %
 FCM = {
     "MSLP, CONUS land": ([-52.8, -42.1, -36.8, 27.7, -2.4], ORANGE),
@@ -77,22 +78,24 @@ ax = axs[0, 0]
 ax.axhline(0, color=NEU, lw=1.1)
 ax.text(36, -0.5, "start from ERA5", color=INK2, fontsize=8.8, ha="center", va="top")
 ax.fill_between(LEADS, *HYB_CI, color=BLUE, alpha=0.13, lw=0)
-ax.fill_between(LEADS, *MXQM_CI, color=YELLOW, alpha=0.13, lw=0)
-for name, (v, c) in STN.items():
-    ref = "ERA5" in name
-    hero = name in ("HYB72-MQM", "MX-SFC-QM")
-    ax.plot(LEADS, v, "--" if ref else "-", color=c, lw=1.6 if ref else (2.6 if hero else 1.9),
-            marker="o", ms=6, mec=SURF, mew=1.6)
-endlabels(ax, [("M-DIR", 14.9, 16.0, MAGENTA), ("M-QM", 11.1, 11.8, ORANGE),
-               ("MX-SFC-QM", 0.7, 1.6, YELLOW),
-               ("HYB72-MQM", 5.5, 6.2, BLUE), ("HYB72-DIR (ERA5)", -3.6, -3.6, NEU2)], LEADS, 72,
-          pad=3.5, bold=("HYB72-MQM", "MX-SFC-QM"))
+for name, (v, c, ls) in STN.items():
+    ref = "ERA5" in name and "HYB" in name
+    hero = "HYB72-MQM" in name
+    ax.plot(LEADS, v, ls, color=c, lw=2.6 if hero else (1.8 if ":" in ls else 1.9),
+            marker="o", ms=5.5 if ":" in ls else 6, mec=SURF, mew=1.6)
+endlabels(ax, [("M-DIR", 14.9, 16.2, MAGENTA),
+               ("M-QM", 11.1, 12.2, ORANGE),
+               ("REPLAY72-MQM", 8.1, 8.6, AQUA),
+               ("HYB72-MQM", 5.5, 5.2, BLUE),
+               ("MX-SFC-QM (ablation)", 0.7, 1.2, YELLOW),
+               ("HYB72-DIR (ERA5)", -3.6, -3.6, NEU2)], LEADS, 72,
+          pad=3.5, bold=("HYB72-MQM",))
 ax.set_xlim(3, 73); ax.set_ylim(-6, 24)
 ax.set_ylabel("2 m T RMSE change vs ERA5 start (%)")
 style(ax, LEADS)
 ax.set_title("a   Stations: cost of starting from MERRA-2", loc="left", fontsize=11.5, fontweight="bold", pad=8)
-ax.text(0, -0.24, "652 withheld ISD stations; shading = 95 % bootstrap CI for HYB72-MQM & MX-SFC-QM.\n"
-        "MX-SFC-QM = QM-mapped MERRA-2 surface + ERA5 upper air (no cycling).",
+ax.text(0, -0.24, "652 withheld ISD stations; shading = 95 % bootstrap CI for HYB72-MQM.\n"
+        "Dotted = MX-SFC-QM diagnostic test (spliced ERA5 UA + mapped MERRA-2 sfc).",
         transform=ax.transAxes, fontsize=8.5, color=INK2, va="top")
 
 # ---- b) forecasting MERRA-2 ------------------------------------------------------------
