@@ -2,7 +2,7 @@
 
 **Project:** Machine Learning Analysis of Boundary-Layer Observation Insertion in Global Atmospheric Models  
 **Facility:** NASA Center for Climate Simulation (NCCS) Prism GPU Cluster (`gpu004`)  
-**Date:** started September 17, 2026; last updated September 24, 2026  
+**Date:** started September 17, 2026; last updated September 24, 2026 (§32.5.1 added)  
 **Status:** Single-case study complete for station insertion (§16–27) and foreign-reanalysis starts (§28–32); multi-date runs next
 
 ---
@@ -35,6 +35,7 @@ All results are from one case: 2018-01-15 12 UTC, frozen GraphCast_small (1°, 1
 | To forecast MERRA-2, map in and out | A QM-mapped MERRA-2 start predicts MERRA-2 better than the ERA5 start for ~24 h near the surface and 6–12 h aloft; after that the back-mapped ERA5 start wins | §30 |
 | MERRA-2 is a less accurate start, not a foreign one | ERA5 + a MERRA-2-sized difference (E+DM24) degrades as much as a MERRA-2 start; balance-preserving mappings add little | §31 |
 | Fine-tuning is not the main lever | The penalty behaves like initial-condition error, which retraining does not remove; mapping in/out already handles the climate part | §32 |
+| With your own stations: cycle or 4D-Var once, never insert directly | HYB72-MQM best at 24–72 h; single-shot 4DV-MQM +3.8 %* at 72 h and ties at USCRN; M-QM+DIR +16.7 %* at 6 h; adding 4D-Var to the MERRA-2 replay cycle hurts (+8.8 %* at 24 h) | §32.5 |
 
 ### 0.3 Caveats
 - One January case. Summer and multi-date runs are needed before any of this is general.
@@ -1387,7 +1388,7 @@ This is consistent with MERRA-2's 3D-Var + IAU at 0.5° vs ERA5's 4D-Var at ~0.2
 
 ### 32.3 Recipe for a foreign analysis without retraining
 1. Map it into ERA5's climate with hour-of-day QM (mean + variance; precipitation mean shift only).
-2. Replay toward the mapped analysis for 72 h and add your own observations (HYB72-MQM).
+2. Replay toward the mapped analysis for 72 h and add your own observations (HYB72-MQM). Without a cycle, use single-shot 4D-Var on the mapped analysis (4DV-MQM). Do not insert stations directly, and do not add 4D-Var on top of the MERRA-2 cycle (§32.5.1).
 3. To forecast in the foreign analysis's frame, map the forecast back (inverse QM).
 
 This recovers about half the station penalty and ties an ERA5 start at USCRN. It predicts the foreign analysis best for about the first day. It cannot remove the remaining gap, which is initial-condition quality.
@@ -1407,13 +1408,45 @@ HYB72-MQM (replay toward QM-mapped MERRA-2 + ISD 2 m T every cycle), at 6 / 12 /
   - 2 m T is slightly worse than M-QM at 6–12 h (1.28 vs 1.14 K at 6 h), because the stations add information MERRA-2 does not have.
   - Z500 NH is a little better at 72 h (20.7 vs 22.1 m).
 
-Pending run `isd_merra2_4dv` adds the remaining combinations:
-- M-QM+DIR (stations inserted into the mapped pair, no cycling);
-- 4DV-MQM (single-shot 4D-Var on the mapped pair);
-- HYB72-4DV-MQM and HYB72-4DV-M (4D-Var on MERRA-2-replay backgrounds).
+#### 32.5.1 The remaining combinations (`isd_merra2_4dv` run)
+2 m T RMSE change vs the ERA5 start, 6 / 12 / 24 / 48 / 72 h (* = 95 % bootstrap significant):
+
+| Arm | What it is | Withheld ISD (652) | USCRN (120) |
+|---|---|---|---|
+| M-QM | mapped MERRA-2, no stations (§29) | +12.2* / +10.2* / +9.8* / +8.1* / +11.1* | — |
+| M-QM+DIR | stations inserted directly into the mapped pair, no cycling | +16.7* / +15.4* / +7.0* / +3.7* / +8.8* | — |
+| **4DV-MQM** | single-shot 4D-Var on the mapped pair | **+7.5* / +7.5* / +5.3* / +4.6* / +3.8*** | +1.5 / −0.7 / +4.1 / +1.1 / +1.7 (all n.s.) |
+| **HYB72-MQM** | 72 h replay to mapped MERRA-2 + stations (§32.5) | **+7.4* / +5.9* / +2.7 / +3.5* / +5.5*** | −1.1 / −4.5 / +1.1 / −0.1 / +2.0 (all n.s.) |
+| HYB72-4DV-MQM | the same cycle with 4D-Var at the end | +7.7* / +8.8* / +8.8* / +6.8* / +6.8* | 24 h +6.4 %* |
+| HYB72-4DV-M | the same on raw MERRA-2 | +10.5* / +11.0* / +4.2* / +7.8* / +11.6* | — |
+| HYB72-4DV (ERA5 base, §27) | reference | −1.0 / −3.1* / −2.0* / −1.6* / −2.4* | — |
+
+**Findings**
+1. **Direct insertion shocks the mapped MERRA-2 start too.** M-QM+DIR fits the withheld stations best at t0 (1.88 K vs 2.46 K for M-QM), yet it is worse than M-QM at 6–12 h. Its first-step 2 m T change is 5.79 K vs 5.54 K for M-QM. This is the same pattern as DIR-1F on ERA5 (§21, §26): closeness at t0 is not consistency.
+2. **4DV-MQM is the best single-shot MERRA-2 + stations start.**
+   - It is the only non-cycled arm that stays within +4–8 % of the ERA5 start at every lead.
+   - It ties the ERA5 start at USCRN (all leads n.s.).
+   - It has the smallest penalty of all MERRA-2 arms at 72 h (+3.8 %*).
+   - Aloft it is also good: Z500 (N America–Atlantic) at 72 h is 26.1 m, vs 29.4 m for M-QM and 25.3 m for HYB72-MQM.
+3. **4D-Var does not transfer to a MERRA-2 base.**
+   - On the ERA5 base, adding 4D-Var to the cycle helped (HYB72-4DV −3.1 %* at 12 h, §27).
+   - On the mapped MERRA-2 base it hurts: HYB72-4DV-MQM is worse than HYB72-MQM from 12 h on (+8.8 %* vs +2.7 % at 24 h), and it is significantly worse than the ERA5 start at USCRN at 24 h.
+   - Likely reasons (untested):
+     - The background-error covariance B was set for an ERA5-quality background. The replayed MERRA-2 background has larger and more systematic errors.
+     - The station increments then conflict with the MERRA-2 column above, and the 4D-Var fit spreads that conflict through the window.
+4. **Raw MERRA-2 stays worst.** HYB72-4DV-M keeps the terrain sea-level-pressure artifact (terrain MSLP bias −5.29 hPa) and ends at +11.6 %* at 72 h. Mapping first (MQM) matters more than the assimilation method.
+
+**Practical ranking for a MERRA-2 start with your own stations**
+- With 72 h of cycling available: HYB72-MQM (best at 24–72 h).
+- Single-shot: 4DV-MQM (best at 72 h, level at 6–12 h).
+- Avoid: direct insertion (M-QM+DIR), and 4D-Var on top of the MERRA-2 replay cycle.
+
+Still to add: the MERRA-2-truth (back-mapped) and own-world scores for these arms, from the `FORECASTING MERRA-2` block of `merra2_4dv.log`.
 
 ### 32.6 Next steps
-- [ ] Run `isd_merra2_4dv` (arms above) and add the results here
+- [x] Run `isd_merra2_4dv` (§32.5.1)
+- [ ] Add the MERRA-2-truth / own-world scores of the `isd_merra2_4dv` arms
+- [ ] Initialization-shock run with mixed states (`isd_merra2_shock`: MX-SFC, MX-SFC-1F, MX-SFC-QM, MX-UA vs DIR-1F, M-DIR, M-QM)
 - [ ] Multi-date runs (4 winter, 4 summer): ERA5, M-QM, HYB72-MQM, E+DM24, HYB72-DIR, with month-specific climatologies
 - [ ] Small ensemble of mapped MERRA-2 starts (does averaging recover 48–72 h upper-air skill?)
 - [ ] Lead-dependent output calibration from 2011–2017 January GraphCast forecasts
