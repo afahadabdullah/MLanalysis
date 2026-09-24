@@ -42,7 +42,31 @@ At 0.25°, HYB72-DIR is −2.5 %* (withheld) and −4.1 %* (USCRN) vs ERA5 at +7
 6. **The 4D-Var limit is the background-error model (B), not the solver or the obs error.** L-BFGS converges (gradient falls about 10⁴×). Doubling σo cuts the 4DV gain roughly in half, so the station weight is not too high.
 7. **Operational extras did not beat plain HYB72-DIR:** weighted 4DIAU profiles, level-selective replay, station bias correction, and the model-Jacobian vertical balance (JAC).
 
-Details, all runs and caveats: [`RESULTS.md`](RESULTS.md) (§21–27 are the current experiments).
+Details, all runs and caveats: [`RESULTS.md`](RESULTS.md) (§0 summary; §21–27 station insertion).
+
+---
+
+## Starting GraphCast from a foreign reanalysis (MERRA-2)
+
+GraphCast was trained only on ERA5, but a real-time system has to start from another centre's analysis. We start the frozen model from NASA MERRA-2 and score it three ways: against stations, against ERA5, and against MERRA-2's own analyses. `scripts/prep_merra2.py` converts MERRA-2 to GraphCast inputs. `scripts/build_clim.py` builds the January climatologies. `scripts/score_anomalies.py` does the MERRA-2 verification.
+
+![MERRA-2 results](docs/figs/readme_merra2.png)
+
+| Arm | Initial state | Withheld stations vs ERA5 start, +6 h / +72 h | USCRN vs ERA5 start, +72 h |
+|---|---|:---:|:---:|
+| M-DIR | raw MERRA-2 | +20.9* / +14.9* | +8.0* |
+| M-QM | MERRA-2 mapped to ERA5's climate (hour-of-day mean + variance) | +12.2* / +11.1* | +6.1* |
+| REPLAY72-MQM | 72 h cycling relaxed toward M-QM | +7.5* / +8.1* | +3.7 |
+| **HYB72-MQM** | REPLAY72-MQM + station increments every cycle | +7.4* / +5.5* | **+2.0** |
+
+### What we learned
+1. **A raw MERRA-2 start costs 15–21 %, and it is not an initialization shock.** The first-step change matches ERA5's. MERRA-2's sea-level pressure over high terrain is offset by about −5 hPa (a reduction artifact), and the model keeps it for days.
+2. **The model pulls MERRA-2 toward ERA5.** MERRA-2's 2 m T and T850 differences are gone within ~12 h, and the ERA5 daily cycle is imposed in the first step (panel d).
+3. **Map, cycle, add stations.** Anomaly initialization + replay + own stations (HYB72-MQM) halves the penalty and ties the ERA5 start at USCRN. It still trails the ERA5-based HYB72-DIR.
+4. **To forecast MERRA-2 itself, map in and out** (panel b). The mapped MERRA-2 start predicts MERRA-2 better for ~24 h near the surface and 6–12 h aloft. After that, an ERA5 start converted to MERRA-2's climate does better.
+5. **MERRA-2 is a less accurate start, not a foreign one** (panel c). ERA5 plus a MERRA-2-sized difference (E+DM24) degrades as much as a MERRA-2 start. So fine-tuning GraphCast on MERRA-2 would not remove the main penalty; better or averaged initial conditions would.
+
+Caveat: withheld ISD stations lean toward ERA5, whose land-surface analysis uses them; MERRA-2 does not assimilate land-station 2 m T. USCRN is the fairer network. Details: [`RESULTS.md`](RESULTS.md) §28–32.
 
 ---
 
@@ -67,7 +91,8 @@ The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations a
 |---|---|
 | `scripts/exp_main_real_obs.py` | Main experiment: QC, OI, all insertion arms (DIR/COL/BAL/PBL, IAU, nudging, replay/hybrid cycling, JAC, 4D-Var), forecasts, verification, plots |
 | `scripts/download_*` | ERA5 (1° and 0.25°), ISD-Lite, USCRN, MERRA-2 (`download_merra2.sh`) downloaders |
-| `scripts/plot_*.py` | Synthesis figures in `docs/figs/` (`plot_readme_summary.py` makes the figure above) |
+| `scripts/prep_merra2.py`, `build_clim.py`, `score_anomalies.py`, `plot_global_maps.py` | MERRA-2 → GraphCast inputs, hour-of-day climatologies, verification against MERRA-2, global maps |
+| `scripts/plot_*.py` | Synthesis figures in `docs/figs/` (`plot_readme_summary.py`, `plot_readme_merra2.py` make the README figures) |
 | `scripts/test_*.py`, `exp0_*` | Earlier exploratory experiments (retention, balance, IAU, twin/OSSE tests; RESULTS §1–17) |
 | `RESULTS.md` | Full log of results and reviews |
 | `OPERATIONAL_DA_PLAN.md` | Operational DA design, method options, roadmap (Steps 5–7) |
@@ -76,7 +101,7 @@ The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations a
 
 ## Status and next steps
 
-- **Current focus — NWP forecasting from foreign reanalyses (NASA MERRA-2):** GraphCast was trained exclusively on ERA5. Operational deployment requires initializing from or anchoring to foreign analyses (such as MERRA-2 or real-time GEOS-FP) that the model never saw during training. Current work evaluates the foreign-analysis penalty, anomaly initialization (quantile matching / `M-QM`), and hybrid replay toward MERRA-2 (`REPLAY72-M`, `HYB72-MQM`) to absorb foreign states without retraining.
+- **Foreign reanalyses (MERRA-2), done for this case:** penalty, anomaly initialization, replay + stations, forecasting MERRA-2 itself, and the E+DM24 test (section above). Next: 4D-Var on the MERRA-2 base, ensembles of mapped starts, and output calibration from past forecasts.
 - **Shock propagation across variables:** Multivariate analysis of initialization shock from foreign analyses and direct station insertion across vertical velocity ($\omega$), precipitation, MSLP, and winds (see [`OPERATIONAL_DA_PLAN.md`](OPERATIONAL_DA_PLAN.md) §14).
 - **4D-Var tuning (done for this case):** larger B (σb × 2) and shorter correlation length (150 km) fit the stations more closely at t0 but do not improve the forecast, so the defaults stay (RESULTS §27.6). A flow-dependent, NMC-based B is the remaining 4D-Var option.
 - **Multiple dates across seasons:** Evaluating across diverse seasonal regimes.

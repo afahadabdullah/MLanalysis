@@ -9,6 +9,7 @@ __pycache__/
 data/
 runs/
 results/figs/
+Claude outputs/
 *.nc
 *.npz
 *.zarr/
