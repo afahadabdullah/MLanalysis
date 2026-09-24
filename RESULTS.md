@@ -2,7 +2,7 @@
 
 **Project:** Machine Learning Analysis of Boundary-Layer Observation Insertion in Global Atmospheric Models  
 **Facility:** NASA Center for Climate Simulation (NCCS) Prism GPU Cluster (`gpu004`)  
-**Date:** started September 17, 2026; last updated September 24, 2026 (§32.5.1 added)  
+**Date:** started September 17, 2026; last updated September 24, 2026 (§32.5.1–32.5.2 added)  
 **Status:** Single-case study complete for station insertion (§16–27) and foreign-reanalysis starts (§28–32); multi-date runs next
 
 ---
@@ -36,6 +36,8 @@ All results are from one case: 2018-01-15 12 UTC, frozen GraphCast_small (1°, 1
 | MERRA-2 is a less accurate start, not a foreign one | ERA5 + a MERRA-2-sized difference (E+DM24) degrades as much as a MERRA-2 start; balance-preserving mappings add little | §31 |
 | Fine-tuning is not the main lever | The penalty behaves like initial-condition error, which retraining does not remove; mapping in/out already handles the climate part | §32 |
 | With your own stations: cycle or 4D-Var once, never insert directly | HYB72-MQM best at 24–72 h; single-shot 4DV-MQM +3.8 %* at 72 h and ties at USCRN; M-QM+DIR +16.7 %* at 6 h; adding 4D-Var to the MERRA-2 replay cycle hurts (+8.8 %* at 24 h) | §32.5 |
+| 4D-Var stays close to its background | t0 distance from the base analysis: HYB72-4DV-MQM 0.78 K vs HYB72-MQM 1.38 K; HYB72-4DV 0.45 K vs HYB72-DIR 0.86 K. Good on ERA5, keeps MERRA-2's errors on MERRA-2 | §32.5 |
+| Stations do not help predict MERRA-2 itself | vs MERRA-2 (back-mapped), M-QM without stations is best at 6–24 h (2 m T 1.14 K at 6 h vs 1.24–1.46 K with stations) | §32.5.2 |
 
 ### 0.3 Caveats
 - One January case. Summer and multi-date runs are needed before any of this is general.
@@ -1427,13 +1429,12 @@ HYB72-MQM (replay toward QM-mapped MERRA-2 + ISD 2 m T every cycle), at 6 / 12 /
    - It is the only non-cycled arm that stays within +4–8 % of the ERA5 start at every lead.
    - It ties the ERA5 start at USCRN (all leads n.s.).
    - It has the smallest penalty of all MERRA-2 arms at 72 h (+3.8 %*).
-   - Aloft it is also good: Z500 (N America–Atlantic) at 72 h is 26.1 m, vs 29.4 m for M-QM and 25.3 m for HYB72-MQM.
+   - Aloft it helps a little at 72 h: Z500 (N America–Atlantic) vs MERRA-2 is 26.6 m, vs 29.5 m for M-QM and 25.5 m for HYB72-MQM (§32.5.2).
 3. **4D-Var does not transfer to a MERRA-2 base.**
    - On the ERA5 base, adding 4D-Var to the cycle helped (HYB72-4DV −3.1 %* at 12 h, §27).
    - On the mapped MERRA-2 base it hurts: HYB72-4DV-MQM is worse than HYB72-MQM from 12 h on (+8.8 %* vs +2.7 % at 24 h), and it is significantly worse than the ERA5 start at USCRN at 24 h.
-   - Likely reasons (untested):
-     - The background-error covariance B was set for an ERA5-quality background. The replayed MERRA-2 background has larger and more systematic errors.
-     - The station increments then conflict with the MERRA-2 column above, and the 4D-Var fit spreads that conflict through the window.
+   - Reason (from §32.5.2): 4D-Var stays close to its background. At t0, HYB72-4DV-MQM is 0.78 K from MERRA-2 in 2 m T vs 1.38 K for HYB72-MQM. On the ERA5 base the same holds: HYB72-4DV is 0.45 K from ERA5 vs 0.86 K for HYB72-DIR.
+   - Staying close to an accurate background (ERA5, which already used many of these stations) helps at stations. Staying close to a less accurate one (MERRA-2) keeps its errors. So the value of adding 4D-Var depends on the quality of the background.
 4. **Raw MERRA-2 stays worst.** HYB72-4DV-M keeps the terrain sea-level-pressure artifact (terrain MSLP bias −5.29 hPa) and ends at +11.6 %* at 72 h. Mapping first (MQM) matters more than the assimilation method.
 
 **Practical ranking for a MERRA-2 start with your own stations**
@@ -1441,11 +1442,44 @@ HYB72-MQM (replay toward QM-mapped MERRA-2 + ISD 2 m T every cycle), at 6 / 12 /
 - Single-shot: 4DV-MQM (best at 72 h, level at 6–12 h).
 - Avoid: direct insertion (M-QM+DIR), and 4D-Var on top of the MERRA-2 replay cycle.
 
-Still to add: the MERRA-2-truth (back-mapped) and own-world scores for these arms, from the `FORECASTING MERRA-2` block of `merra2_4dv.log`.
+#### 32.5.2 The same arms scored against MERRA-2 (back-mapped; `FORECASTING MERRA-2` block)
+RMSE vs the MERRA-2 analyses after mapping each forecast back into MERRA-2's climate, 6 / 12 / 24 / 48 / 72 h. Bold = best at that lead.
+
+| Arm | 2 m T, CONUS land (K) | T850, NH 20–90N (K) | Z500, NH 20–90N (m) |
+|---|---|---|---|
+| ERA5 start | 1.56 / 2.23 / 2.16 / **2.12** / **1.92** | 1.15 / 1.17 / **1.18** / **1.28** / 1.58 | 5.20 / **5.51** / **6.47** / **11.6** / 18.6 |
+| HYB72-DIR (ERA5 + stations) | 1.57 / 2.27 / 2.29 / 2.21 / **1.92** | 1.14 / 1.17 / 1.19 / 1.29 / **1.56** | 5.05 / 5.54 / 6.90 / 11.9 / **17.9** |
+| **M-QM** (no stations) | **1.14** / **1.66** / **1.92** / 2.16 / 2.05 | **0.71** / **0.99** / 1.20 / 1.46 / 1.77 | **3.89** / 5.74 / 8.96 / 15.3 / 22.1 |
+| M-QM+DIR | 1.46 / 1.93 / 2.07 / 2.20 / 2.10 | **0.71** / **0.99** / 1.20 / 1.46 / 1.75 | 3.90 / 5.76 / 8.94 / 15.1 / 21.4 |
+| 4DV-MQM | 1.37 / 1.76 / 2.02 / 2.15 / 2.02 | 0.97 / 1.11 / 1.25 / 1.49 / 1.76 | 5.57 / 6.83 / 9.77 / 15.9 / 21.6 |
+| HYB72-MQM | 1.28 / 1.76 / 2.01 / 2.14 / 2.02 | 0.78 / 1.01 / 1.20 / 1.45 / 1.72 | 4.28 / 5.93 / 9.03 / 15.0 / 20.7 |
+| HYB72-4DV-MQM | 1.24 / 1.68 / 1.99 / 2.14 / 2.01 | 0.78 / 1.01 / 1.20 / 1.45 / 1.73 | 4.27 / 5.91 / 9.08 / 15.1 / 20.9 |
+| HYB72-4DV-M (raw MERRA-2) | 1.36 / 2.33 / 2.19 / 2.17 / 2.20 | 0.86 / 1.08 / 1.25 / 1.46 / 1.73 | 5.53 / 7.05 / 9.61 / 15.1 / 20.5 |
+
+Distance from MERRA-2 at t0 (2 m T, CONUS land): M-QM 0, HYB72-4DV-MQM 0.78 K, 4DV-MQM 1.37 K, HYB72-MQM 1.38 K, M-QM+DIR 1.81 K, ERA5 1.92 K.
+
+**Findings**
+1. **To predict MERRA-2 near the surface, leave the stations out.** M-QM is best at 6–24 h in 2 m T. Every station arm starts further from MERRA-2 and is worse at 6 h (1.24–1.46 K vs 1.14 K), because the stations carry information MERRA-2 does not have. The station arms and M-QM converge by 24–48 h.
+2. **The crossover with the ERA5 start is unchanged.** In 2 m T the MERRA-2 arms win to 24 h and the ERA5 start wins from 48 h (2.12 vs 2.14–2.20 K). Aloft the MERRA-2 arms win at 6 h (T850 0.71 vs 1.15 K, Z500 NH 3.9 vs 5.2 m). T850 ties at 24 h, and Z500 favours the ERA5 start from 12 h on.
+3. **Cycling helps the 72 h upper air.** Z500 NH at 72 h is 20.5–20.9 m for the HYB72 arms vs 22.1 m for M-QM. It still does not reach the ERA5 start (18.6 m) or HYB72-DIR (17.9 m).
+4. **Single-shot 4DV-MQM moves the whole column away from MERRA-2.** At t0 it is 0.74 K (T850) and 3.6 m (Z500 NH) from MERRA-2, and it is the worst MERRA-2 arm aloft at 6–24 h. It buys its station skill (§32.5.1) at MERRA-2's expense.
+5. **Stations and ERA5 are on the same side.** Back-mapped 2 m T bias vs MERRA-2 at t0: ERA5 −0.62 K, HYB72-DIR −0.91 K, HYB72-MQM −0.37 K, M-QM 0. Inserting stations shifts a MERRA-2 start the same way ERA5 differs from it. This supports §32.2: ERA5 is the better start near the surface here.
+6. **Back-mapping is wrong for MSLP of raw-MERRA-2 arms.**
+   - HYB72-4DV-M's MSLP over land above 1000 m is 0.82 hPa from MERRA-2 raw but 3.88 hPa back-mapped at t0, and the raw score stays better to 72 h (3.75 vs 4.00 hPa).
+   - The model keeps MERRA-2's terrain MSLP (retention 0.33 at 72 h, §28), so subtracting the climatology difference counts it twice.
+   - Own-world MSLP scores for raw starts (M-DIR, HYB72-M, HYB72-4DV-M) therefore overstate their error. Even scored raw, HYB72-4DV-M is worse than back-mapped M-QM beyond 6 h (2.30 vs 1.81 hPa at 12 h, 3.75 vs 2.29 hPa at 72 h), so the conclusion that mapping first matters still holds.
+
+**Which arm to use, by target**
+| Target | 0–24 h | 48–72 h |
+|---|---|---|
+| Stations (2 m T) | HYB72-MQM or 4DV-MQM (4DV-MQM if no cycle) | HYB72-MQM; 4DV-MQM at 72 h |
+| MERRA-2's own analyses | M-QM without stations, back-mapped | ERA5 start, back-mapped (a MERRA-2 start no longer helps) |
+| Upper air at 72 h, from MERRA-2 | HYB72 cycles (20.5–20.9 m vs 22.1 m for M-QM) | |
 
 ### 32.6 Next steps
 - [x] Run `isd_merra2_4dv` (§32.5.1)
-- [ ] Add the MERRA-2-truth / own-world scores of the `isd_merra2_4dv` arms
+- [x] MERRA-2-truth / own-world scores of the `isd_merra2_4dv` arms (§32.5.2)
+- [ ] Field-dependent back-mapping for raw-MERRA-2 starts (retention-weighted, or raw for MSLP), then re-score M-DIR / HYB72-M / HYB72-4DV-M
 - [ ] Initialization-shock run with mixed states (`isd_merra2_shock`: MX-SFC, MX-SFC-1F, MX-SFC-QM, MX-UA vs DIR-1F, M-DIR, M-QM)
 - [ ] Multi-date runs (4 winter, 4 summer): ERA5, M-QM, HYB72-MQM, E+DM24, HYB72-DIR, with month-specific climatologies
 - [ ] Small ensemble of mapped MERRA-2 starts (does averaging recover 48–72 h upper-air skill?)
