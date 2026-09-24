@@ -71,6 +71,18 @@ Caveat: withheld ISD stations lean toward ERA5, whose land-surface analysis uses
 
 ---
 
+## Initialization shock: direct observation insertion vs. dynamically mismatched states
+
+Why do direct observation insertion and foreign reanalyses degrade forecasts, and what kind of shock do they produce? We compared single-frame observation insertion (`DIR-1F`, `M-QM+DIR`), balanced DA (`4DV`, `HYB72-*`), and diagnostic mixed-state ablations (`MX-SFC`, `MX-UA`, `MX-SFC-QM`).
+
+![Initialization shock comparison](docs/figs/model_shock_comparison.png)
+
+1. **Direct observation insertion causes acute tendency shock (panel a):** Inserting observations into the $t_0$ frame only fits stations closest at $t_0$ ($1.78\text{ K}$), but degrades sharply by $+6\text{ h}$ ($2.02\text{ K}$, a $+16\%$ penalty vs ERA5). The two-frame input sees an unphysical tendency. Balanced methods (4D-Var or replay cycling) adjust across time, avoiding the jump entirely.
+2. **Dynamically mismatched states do not cause catastrophic shock (panel a):** Splicing surface and upper-air fields across reanalyses does not trigger dynamic blowup; the points follow standard forecast relaxation.
+3. **Physical shock is field-specific and cured by QM (panel b):** Raw foreign surface fields trigger surface wind shock ($10\text{ m}$ wind index $1.07\text{–}1.11$) and terrain MSLP offset ($-5.9\text{ hPa}$). Quantile mapping (QM) eliminates this completely (shock index $\approx 1.00$). Splicing upper air causes mass/vertical velocity shock aloft. Thus, surface shock is a distribution mismatch, not a dynamic barrier.
+
+---
+
 ## Running
 
 Environment and GPU setup on NCCS Prism: [`SETUP_NCCS_PRISM.md`](SETUP_NCCS_PRISM.md). Data: ERA5 (WeatherBench-2 / ARCO), ISD-Lite and USCRN (`scripts/download_*.py`).
@@ -84,7 +96,7 @@ python -u scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd --
     --outdir runs/exp_main/20180115T12_isd_bg_4dv 2>&1 | tee run.log
 ```
 
-The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations and the ERA5 grid, and bootstrap tests. It also writes nine figures. Useful options: `--arms`, `--hyb-types`, `--steps`, `--sigma-repr`, and the `--fdv-*` 4D-Var settings (`--fdv-sig`, `--fdv-L`, `--fdv-solver gn|lbfgs`). See `--help` for the full list.
+The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations and the ERA5 grid, and bootstrap tests. It also writes figures. Useful options: `--arms`, `--hyb-types`, `--steps`, `--sigma-repr`, and the `--fdv-*` 4D-Var settings (`--fdv-sig`, `--fdv-L`, `--fdv-solver gn|lbfgs`). See `--help` for the full list.
 
 ## Repository
 
@@ -93,17 +105,16 @@ The script prints t0 diagnostics, RMSE tables against USCRN, withheld stations a
 | `scripts/exp_main_real_obs.py` | Main experiment: QC, OI, all insertion arms (DIR/COL/BAL/PBL, IAU, nudging, replay/hybrid cycling, JAC, 4D-Var), forecasts, verification, plots |
 | `scripts/download_*` | ERA5 (1° and 0.25°), ISD-Lite, USCRN, MERRA-2 (`download_merra2.sh`) downloaders |
 | `scripts/prep_merra2.py`, `build_clim.py`, `score_anomalies.py`, `plot_global_maps.py` | MERRA-2 → GraphCast inputs, hour-of-day climatologies, verification against MERRA-2, global maps |
-| `scripts/plot_*.py` | Synthesis figures in `docs/figs/` (`plot_readme_summary.py`, `plot_readme_merra2.py` make the README figures) |
+| `scripts/plot_*.py` | Synthesis figures in `docs/figs/` (`plot_readme_summary.py`, `plot_readme_merra2.py`, `plot_shock_comparison.py`) |
 | `scripts/test_*.py`, `exp0_*` | Earlier exploratory experiments (retention, balance, IAU, twin/OSSE tests; RESULTS §1–17) |
 | `RESULTS.md` | Full log of results and reviews |
 | `OPERATIONAL_DA_PLAN.md` | Operational DA design, method options, roadmap (Steps 5–7) |
 | `PROJECT_PLAN_LEAN.md`, `PROJECT_PLAN.md` | Project scope and original proposal |
 | `DATA_SOURCES.md`, `SETUP_NCCS_PRISM.md` | Data sources; cluster setup |
 
-## Status and next steps
+## Next steps
 
-- **Foreign reanalyses (MERRA-2), done for this case:** penalty, anomaly initialization, replay + stations, forecasting MERRA-2 itself, the E+DM24 test, and initialization-shock anatomy via mixed-state experiments (§33: surface vs upper-air decomposition, MX-SFC-QM). Next: 4D-Var on the MERRA-2 base, ensembles of mapped starts, and output calibration from past forecasts.
-- **Shock propagation across variables done (§33):** Mixed-state arms (MX-SFC, MX-UA, MX-SFC-QM) separate surface and upper-air contributions; QM mapping eliminates the surface component. Precipitation shock analysis from the saved `fields.nc` is next.
-- **4D-Var tuning (done for this case):** larger B (σb × 2) and shorter correlation length (150 km) fit the stations more closely at t0 but do not improve the forecast, so the defaults stay (RESULTS §27.6). A flow-dependent, NMC-based B is the remaining 4D-Var option.
-- **Multiple dates across seasons:** Evaluating across diverse seasonal regimes.
+- **Multiple dates across seasons:** Evaluating across diverse seasonal regimes (summer convective vs. winter baroclinic) with month-specific climatologies.
 - **Ensembles:** EDA-lite and bred vectors evaluated with CRPS at independent withheld stations.
+- **Output calibration:** Lead-dependent systematic error correction from past GraphCast forecasts.
+- **Flow-dependent B in 4D-Var:** NMC-based background error covariance to replace isotropic diffusion.
