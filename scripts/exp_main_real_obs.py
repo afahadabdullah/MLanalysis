@@ -63,6 +63,7 @@ import datetime as dt
 import functools
 import json
 import os
+import sys
 import time
 import warnings
 
@@ -200,6 +201,9 @@ ap.add_argument("--seed", type=int, default=42)
 ap.add_argument("--proj", default=os.environ.get("PROJ", "/home/afahad/project/MLanalysis"))
 ap.add_argument("--outdir", default=None)
 ap.add_argument("--dpi", type=int, default=150)
+ap.add_argument("--save-fields", type=int, default=1,
+                help="Write fields.nc (2 m T, MSLP, T850, Z500, 6 h precip for every arm/lead + analyses) and "
+                     "global maps (scripts/plot_global_maps.py)")
 ap.add_argument("--skip-checks", action="store_true", help="Skip determinism/consistency checks")
 ap.add_argument("--model", default="small", choices=["small", "large"],
                 help="small = GraphCast_small (1 deg, 13 levels, ERA5 1979-2015); "
@@ -2161,6 +2165,51 @@ if DSP is not None:
         print("   ✓ fig10_two_truth.png")
     except Exception as ex:
         print("   (fig10 skipped:", ex, ")")
+
+
+# ---------------------------------------------------------------------------------------------
+# Fields for global maps (re-plot any time: python scripts/plot_global_maps.py <OUT>/fields.nc)
+# ---------------------------------------------------------------------------------------------
+if args.save_fields:
+    try:
+        _FV = {"t2m": ("2m_temperature", None, 1.0), "mslp": ("mean_sea_level_pressure", None, 100.0),
+               "t850": ("temperature", L850, 1.0), "z500": ("geopotential", L500, G),
+               "tp6h": ("total_precipitation_6hr", None, 1e-3)}
+        _L0 = [0] + LEADS
+        _anames = list(ARMS)
+        FDS = xr.Dataset(coords=dict(arm=_anames, lead_h=np.array(_L0, np.int32), lat=LATS, lon=LONS))
+
+        def _get(fr, v, lev):
+            if v not in fr:
+                return None
+            x = fr[v][lev] if lev is not None else fr[v]
+            return np.asarray(x, np.float32)
+
+        for key, (v, lev, sc) in _FV.items():
+            arr = np.full((len(_anames), len(_L0), len(LATS), len(LONS)), np.nan, np.float32)
+            for ia, a in enumerate(_anames):
+                for il in range(len(_L0)):
+                    x = _get(ARMS[a][1] if il == 0 else pred_frame(FC[a], il - 1), v, lev)
+                    if x is not None:
+                        arr[ia, il] = x / sc
+            if np.isfinite(arr).any():
+                FDS[key] = (("arm", "lead_h", "lat", "lon"), arr)
+            for src, fn in (("era5", era5_frame), ("provider", provider_frame if DSP is not None else None)):
+                if fn is None or I0 + len(_L0) - 1 >= len(DATETIMES):
+                    continue
+                an = np.stack([_get(fn(I0 + il), v, lev) / sc for il in range(len(_L0))])
+                FDS[f"{key}_{src}"] = (("lead_h", "lat", "lon"), an.astype(np.float32))
+        FDS.attrs.update(t0=args.t0, units="t2m K, mslp hPa, t850 K, z500 m, tp6h mm per 6 h",
+                         provider=os.path.basename(args.provider_file) if args.provider_file else "")
+        FDS.to_netcdf(os.path.join(OUT, "fields.nc"),
+                      encoding={k: {"zlib": True, "complevel": 3} for k in FDS.data_vars})
+        print(f"   fields.nc: {len(_anames)} arms x {len(_L0)} leads")
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import plot_global_maps
+        plot_global_maps.make_all(os.path.join(OUT, "fields.nc"), args.clim_era5, args.clim_provider,
+                                  arm="M-DIR" if "M-DIR" in ARMS else ("M-QM" if "M-QM" in ARMS else "M-DIR"))
+    except Exception as ex:
+        print("   (global maps skipped:", repr(ex)[:200], ")")
 
 print("=" * 76)
 print(f"Outputs in {OUT}")
