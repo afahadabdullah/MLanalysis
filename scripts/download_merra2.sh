@@ -11,7 +11,8 @@
 #   tavg1_2d_flx_Nx  (M2T1NXFLX, hourly means):          PRECTOT, PRECTOTCORR  (-> 6 h precip)
 #   const_2d_asm_Nx  (M2C0NXASM, one file):              PHIS, FRLAND           (below-ground fill)
 #
-# 1) If MERRA-2 is on local NCCS storage (MERRA2_all/Y%Y/M%m layout), files are symlinked, no download.
+# 1) If MERRA-2 is on local NCCS storage (MERRA2_all/Y%Y/M%m layout, e.g. /css/merra2/MERRA2_all on Prism,
+#    files named MERRA2.<collection>.<date>.nc4), they are symlinked under the standard GES DISC name, no download.
 #    Override the search with MERRA2_LOCAL=/path/to/MERRA2_all.
 # 2) Otherwise they are downloaded from NASA GES DISC. This needs a (free) Earthdata login:
 #      - account at https://urs.earthdata.nasa.gov, and in your profile approve the application
@@ -53,9 +54,11 @@ get() {      # $1 host  $2 collection dir  $3 file name  $4 relative dir (YYYY/M
   if [ -s "$dest" ] && check "$dest"; then echo "   ok      $name"; return 0; fi
   if [ -n "$LOCAL" ]; then
     local y=${rel%%/*} m=${rel##*/}
-    local lp="$LOCAL/Y$y/M$m/$name"
-    [ -z "$rel" ] && lp="$LOCAL/$name"
-    if [ -f "$lp" ]; then ln -sf "$lp" "$dest"; echo "   linked  $name"; return 0; fi
+    local dir="$LOCAL/Y$y/M$m"; [ -z "$rel" ] && dir="$LOCAL"
+    local short="MERRA2.${name#MERRA2_*.}"          # NCCS copies drop the stream number: MERRA2.<coll>.<date>.nc4
+    for lp in "$dir/$name" "$dir/$short"; do
+      if [ -f "$lp" ]; then ln -sf "$lp" "$dest"; echo "   linked  $name  <- $lp"; return 0; fi
+    done
   fi
   local url="https://$host.gesdisc.eosdis.nasa.gov/data/$coll/${rel:+$rel/}$name"
   wget -q --load-cookies ~/.urs_cookies --save-cookies ~/.urs_cookies --keep-session-cookies \
