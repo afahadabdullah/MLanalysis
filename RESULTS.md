@@ -1173,3 +1173,47 @@ Same setup as lbfgs2, with only B changed: `--fdv-sig` × 2 for every variable (
 - **The forecasts do not improve.** The changes are within ±1 percentage point and inside the bootstrap intervals. HYB72-4DV even loses about 1 pp at +6 h, while its t0 fit gets better: the extra station detail is small-scale 2 m T structure that GraphCast drops within the first step. This is the "consistency beats closeness" result again, now inside 4D-Var.
 - The Desroziers ratio stays at 1.7–2.0 with any B. Neither B amplitude nor length scale can remove this misfit, so it is representativeness (point stations vs 1° cells) that the model cannot hold. Doubling σo (§27.5) still hurts, because it also shrinks the large-scale part of the increment that the model does keep.
 - **Conclusion for this case:** 4D-Var tuning is saturated; keep σb × 1, L = 300 km, σo = 1.12 K. The ranking is unchanged: HYB72-4DV is best at 6–12 h and HYB72-DIR best at 24–72 h. Further gains must come from elsewhere (multi-date evaluation, flow-dependent or NMC-based B with cross-variable structure, or more observation types), not from scaling this B.
+
+---
+
+## 28. Foreign reanalysis: GraphCast started from MERRA-2 (1°, 2018-01-15 12 UTC, `isd_merra2` run)
+
+MERRA-2 was mapped to the GraphCast input schema with `scripts/prep_merra2.py`: `inst3_3d_asm_Np` + `inst1_2d_asm_Nx` + `tavg1_2d_flx_Nx`, below-ground extrapolation, conservative regridding to 1°, and 2 m T height-corrected to ERA5 orography. Static fields and forcings stay ERA5's. Arms: **M-DIR** (forecast started from MERRA-2), **REPLAY72-M** (72 h replay toward MERRA-2), **HYB72-M** (REPLAY72-M + ISD stations). Every forecast is scored against the stations, against ERA5 and against MERRA-2, and with the identity retention r = ⟨F_arm − F_ERA5, M − E⟩ / |M − E|² (1 = the forecast keeps the MERRA-2 − ERA5 difference, 0 = it has become the ERA5-started forecast).
+
+**Input check (MERRA-2 − ERA5, mean over the 26 frames).** Global / CONUS-land RMS: 2 m T 1.6 / 2.4 K, T850 1.3 / 1.1 K, Z500 5.9 / 3.9 m, u250 2.6 / 2.1 m/s. MSLP over CONUS land has a −2.5 hPa bias that grows with terrain height: −1.0 hPa below 500 m, −3.7 hPa at 500–1500 m, −4.8 hPa above 1500 m. This is a sea-level-reduction difference, not weather.
+
+### 28.1 Station verification (% change in 2 m T RMSE vs the ERA5 start, withheld ISD; * = significant)
+| Arm | 6 h | 12 h | 24 h | 48 h | 72 h |
+|---|:---:|:---:|:---:|:---:|:---:|
+| M-DIR | +20.9* | +15.9* | +2.9 | +8.4* | +14.9* |
+| REPLAY72-M | +17.3* | +13.1* | +2.6 | +8.8* | +13.9* |
+| HYB72-M | +11.5* | +8.3* | −1.1 | +6.2* | +10.8* |
+| HYB72-DIR (ERA5 base) | +2.8 | −0.4 | −2.7* | −2.6* | −3.6* |
+
+USCRN gives the same picture (M-DIR +8.0 %* at 72 h). **M-DIR is worse than BASE**, which is a 24 h-old GraphCast forecast from ERA5 (+6.1 %* at 6 h, +9.7 %* at 72 h on withheld stations). MERRA-2 also fits the stations worse at t0 itself: 2.53 K vs 1.93 K for ERA5 (withheld), 2.77 K vs 2.52 K (USCRN).
+
+### 28.2 Does the model keep MERRA-2, or pull it toward ERA5?
+| Identity retention r | t0 | 6 h | 12 h | 24 h | 48 h | 72 h |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| 2 m T (CONUS land) | 1.00 | 0.42 | 0.14 | 0.06 | 0.07 | 0.10 |
+| T850 (CONUS) | 1.00 | 0.54 | 0.13 | 0.03 | 0.16 | 0.14 |
+| Z500 (downstream) | 1.00 | 0.79 | 0.47 | 0.24 | (noisy) | −0.04 |
+| MSLP, CONUS land > 1000 m | 1.00 | 0.93 | 0.83 | 0.55 | 0.46 | 0.33 |
+
+- **Near-surface and lower-tropospheric temperature: the model discards MERRA-2 within 12 h.** It is not a first-step shock: M-DIR's first-step 2 m T jump is 6.01 K, the same as ERA5's 6.04 K. The state decays smoothly toward the ERA5-started forecast. The 2 m T bias vs MERRA-2 at 6 h and 12 h (−0.97, +1.01 K) has the same diurnal pattern as the ERA5-started forecast (−0.81, +1.15 K). **The model imposes its ERA5-learned diurnal cycle in one step.**
+- **After 12–24 h the ERA5-started forecast is closer to MERRA-2's own analyses than the MERRA-2-started forecast is.** For T850 at 12 h, M-DIR is 1.21 K from MERRA-2 and the ERA5 start is 1.04 K. For Z500 at 24 h it is 8.8 m vs 5.9 m. The model cannot forecast MERRA-2's world better than it forecasts ERA5's.
+- **MERRA-2-started forecasts are worse in both frames at longer leads.** At 72 h, Z500 is 26.1 m vs ERA5 and 26.6 m vs MERRA-2, against 20.5 m and 21.1 m for the ERA5 start. T850 is 1.87 / 1.97 K against 1.29 / 1.55 K. The out-of-distribution start costs skill, it does not just shift the reference frame.
+- **Exception: the terrain MSLP offset persists for days.** The bias vs ERA5 goes −5.9 → −5.6 → −4.8 → −4.6 → −4.5 → −3.3 hPa from t0 to 72 h. The model treats MERRA-2's sea-level-reduction artifact as real pressure and slowly relaxes it (e-folding ~2–3 days). It is a likely contributor to the faster error growth (to be tested).
+
+### 28.3 Replay and stations on a MERRA-2 base
+- **REPLAY72-M ≈ M-DIR** (+17 % vs +21 % at 6 h; +14 % vs +15 % at 72 h). The penalty is not an imbalance or shock problem that model-consistent cycling fixes. It is what the relaxation target contains: MERRA-2's near-surface state, the MSLP artifact and its larger station misfit.
+- **HYB72-M:** stations recover most of the short-range penalty (USCRN −13.7 %* vs BASE at 6 h, −8.6 %* vs ERA5 at 12 h) and reach ERA5 at 24 h. From 48 h on they cannot overcome the MERRA-2 base (+6 to +11 %* vs ERA5). With the same stations, the ERA5 base (HYB72-DIR) beats ERA5 at 24–72 h. **The quality and "nativeness" of the base analysis decides the medium range.**
+
+### 28.4 Interpretation and next tests
+Initialized from a foreign reanalysis, the ERA5-trained model does not forecast that reanalysis. Within about 12 h it overwrites MERRA-2's lower-tropospheric temperature and diurnal cycle with its ERA5-learned state. The large-scale flow keeps MERRA-2's identity for about a day. A persistent terrain-MSLP artifact carries for days and costs skill. It is not initialization shock (no first-step jump), so replay alone does not help.
+
+Next tests:
+1. **Attribution by variable swap:** M-DIR with ERA5's MSLP, with ERA5's 2 m T, or with ERA5's upper air. Which MERRA-2 fields cause the penalty?
+2. **MSLP recomputed ECMWF-style** from MERRA-2 surface pressure on ERA5 orography (the fix that uses no ERA5 information).
+3. **Anomaly initialization** (M-MEAN / M-QM) with MERRA-2 and ERA5 January climatologies, to remove all systematic differences.
+4. More dates (single case so far).
