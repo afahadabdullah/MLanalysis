@@ -65,6 +65,7 @@ WB2 = "gs://weatherbench2/datasets/era5/1959-2022-1h-360x181_equiangular_with_po
 
 _T = None
 _CONV = None
+NOTES = []
 _ZARR = None
 
 
@@ -87,6 +88,9 @@ def day_frames_merra2(day):
     for h in HOURS:
         fr = _CONV.frame(day + dt.timedelta(hours=h))
         fr.pop("_below_frac", None)
+        ex = fr.pop("_nan_extra", None)
+        if ex:
+            NOTES.append(f"{day:%Y-%m-%d} {h:02d}Z {ex}")
         out.append(fr)
     _CONV.close()
     return out
@@ -125,7 +129,9 @@ def work(day):
     except Exception as e:                          # a missing/corrupt file skips the day, reported at the end
         return day, None, repr(e)
     s1 = [{v: fr[v].astype(np.float64) for v in VARS} for fr in frames]
-    return day, s1, None
+    note = "; ".join(NOTES)
+    NOTES.clear()
+    return day, s1, note or None
 
 
 def main():
@@ -145,6 +151,8 @@ def main():
         futs = [ex.submit(work, d) for d in DAYS]
         for k, f in enumerate(as_completed(futs), 1):
             day, s1, err = f.result()
+            if s1 is not None and err:
+                print(f"   NOTE {err[:200]}", flush=True)
             if s1 is None:
                 bad.append((day, err))
                 print(f"   SKIP {day:%Y-%m-%d}: {err[:120]}", flush=True)

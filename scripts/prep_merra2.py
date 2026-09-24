@@ -181,6 +181,29 @@ class M2Converter:
             for X in others:
                 X[k][m] = X[k - 1][m]
 
+    @staticmethod
+    def fill_leftover(X):
+        """Fill NaNs that are not MERRA-2 below-ground points (missing values in a variable whose mask
+        differs from T's, or at the top): copy from the level above, then from the level below, then the
+        level mean. X is (nlev, ny, nx) in ascending pressure. Returns the number of values filled."""
+        bad = ~np.isfinite(X)
+        n = int(bad.sum())
+        if n == 0:
+            return 0
+        for k in range(1, X.shape[0]):
+            m = ~np.isfinite(X[k])
+            if m.any():
+                X[k][m] = X[k - 1][m]
+        for k in range(X.shape[0] - 2, -1, -1):
+            m = ~np.isfinite(X[k])
+            if m.any():
+                X[k][m] = X[k + 1][m]
+        for k in range(X.shape[0]):
+            m = ~np.isfinite(X[k])
+            if m.any():
+                X[k][m] = np.nanmean(X[k]) if np.isfinite(X[k]).any() else 0.0
+        return n
+
     def frame(self, t):
         """GraphCast state at datetime t: {var: (level, lat, lon) or (lat, lon)} + '_below_frac' (level, lat, lon)."""
         tt = np.datetime64(t)
@@ -190,16 +213,25 @@ class M2Converter:
         PHI = arr["H"] * G
         bg = ~np.isfinite(arr["T"])
         self.fill_below_ground(arr["T"], PHI, [arr["U"], arr["V"], arr["QV"], arr["OMEGA"]])
-        for X in [arr[k] for k in ("T", "U", "V", "QV", "OMEGA")] + [PHI]:
-            if not np.all(np.isfinite(X)):
-                raise SystemExit(f"unfilled NaNs at {t}")
+        extra = {}
+        for k, X in [(k, arr[k]) for k in ("T", "U", "V", "QV", "OMEGA")] + [("H", PHI)]:
+            n = self.fill_leftover(X)
+            if n:
+                extra[k] = n
+        if extra:
+            out["_nan_extra"] = extra
         out["_below_frac"] = self.regrid(bg[self.LEV_IDX].astype(np.float32))
         for v, k in MAP3.items():
             out[v] = self.regrid(arr[k][self.LEV_IDX])
         out["geopotential"] = self.regrid(PHI[self.LEV_IDX])
         d2 = self.open_day("inst1_2d_asm_Nx", t, ["T2M", "U10M", "V10M", "SLP"]).sel(time=tt)
         for v, k in MAP2.items():
-            f = self.regrid(d2[k].values)
+            raw = d2[k].values.astype(np.float64)
+            if not np.all(np.isfinite(raw)):
+                nb = int((~np.isfinite(raw)).sum())
+                raw = np.where(np.isfinite(raw), raw, np.nanmean(raw, axis=1, keepdims=True))
+                out.setdefault("_nan_extra", {})[k] = nb
+            f = self.regrid(raw)
             if v == "2m_temperature" and self.t2m_hc:
                 f = f + GAMMA * (self.PHIS_M - self.PHIS_E) / G
             out[v] = f
@@ -256,6 +288,9 @@ def main():
         t = pd.Timestamp(t64).to_pydatetime()
         fr = C.frame(t)
         frac = fr.pop("_below_frac")
+        ex = fr.pop("_nan_extra", None)
+        if ex:
+            print(f"   NOTE {t:%Y-%m-%d %H:%M}: filled non-below-ground missing values {ex}")
         below_frac.append(float((frac[LEVELS.index(1000)] > 0.5).mean()))
         for v, a in fr.items():
             if v not in OUTV:
