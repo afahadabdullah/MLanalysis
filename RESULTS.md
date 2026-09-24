@@ -2,7 +2,7 @@
 
 **Project:** Machine Learning Analysis of Boundary-Layer Observation Insertion in Global Atmospheric Models  
 **Facility:** NASA Center for Climate Simulation (NCCS) Prism GPU Cluster (`gpu004`)  
-**Date:** started September 17, 2026; last updated September 24, 2026 (§32.5.1–32.5.2 added)  
+**Date:** started September 17, 2026; last updated September 24, 2026 (§32.5.1–32.5.3 added)  
 **Status:** Single-case study complete for station insertion (§16–27) and foreign-reanalysis starts (§28–32); multi-date runs next
 
 ---
@@ -1476,11 +1476,26 @@ Distance from MERRA-2 at t0 (2 m T, CONUS land): M-QM 0, HYB72-4DV-MQM 0.78 K, 4
 | MERRA-2's own analyses | M-QM without stations, back-mapped | ERA5 start, back-mapped (a MERRA-2 start no longer helps) |
 | Upper air at 72 h, from MERRA-2 | HYB72 cycles (20.5–20.9 m vs 22.1 m for M-QM) | |
 
+#### 32.5.3 `isd_merra2_shock` run (arms DIR-1F, M-DIR, M-QM; the mixed-state arms did not run)
+**The shock test itself did not run.** Only ERA5, BASE, DIR-1F, M-DIR and M-QM were forecast, and the log has no shock-index block or fig15. The mixed-state arms (MX-SFC, MX-SFC-1F, MX-SFC-QM, MX-UA) were added in commit 96649f8, which had not been pushed when Prism ran `git pull`. The old code silently drops arm names it does not know. `exp_main_real_obs.py` now prints a warning block for every requested arm that was not built. The run has to be repeated after pushing.
+
+What the run still shows:
+1. **Reproducibility.** The shared arms reproduce the earlier runs exactly:
+   - M-DIR vs the ERA5 start (withheld): +20.9* / +15.9* / +2.9 / +8.4* / +14.9* %, as in §28.
+   - M-QM: +12.2* / +10.2* / +9.8* / +8.1* / +11.1* %, as in §29.
+   - DIR-1F: +16.1* / +9.9* / +4.4* / +5.3* / +3.5 %, as in §21.
+   - Retention of M-DIR (2 m T 0.42 → 0.14 → 0.06; MSLP > 1000 m 0.93 → 0.33 at 72 h) is identical to §28.
+2. **DIR-1F is the worst predictor of MERRA-2 near the surface.** 2 m T vs MERRA-2 (back-mapped): 1.65 / 2.45 / 2.49 / 2.45 / 2.33 K, vs 1.56 / 2.23 / 2.16 / 2.12 / 1.92 K for the ERA5 start. Inserting stations moves the state further from MERRA-2, as in §32.5.2.
+3. **The back-mapping caveat (§32.5.2) holds for M-DIR too.**
+   - MSLP over land above 1000 m vs MERRA-2: raw 1.56 / 2.41 / 4.32 / 3.81 / 3.62 hPa, back-mapped 4.60 / 4.30 / 4.48 / 4.61 / 3.95 hPa.
+   - Back-mapped M-DIR carries a −4.0 to −2.2 hPa terrain bias that its raw forecast does not have. The own-world MSLP score of raw starts is therefore too pessimistic.
+   - 2 m T is mixed. Back-mapping helps M-DIR at 6 h and 48–72 h (1.59 vs 1.84 K at 6 h; 2.23 vs 2.45 K at 72 h) and hurts at 12–24 h. This fits 2 m T drifting to ERA5's climate while terrain MSLP does not.
+
 ### 32.6 Next steps
 - [x] Run `isd_merra2_4dv` (§32.5.1)
 - [x] MERRA-2-truth / own-world scores of the `isd_merra2_4dv` arms (§32.5.2)
 - [ ] Field-dependent back-mapping for raw-MERRA-2 starts (retention-weighted, or raw for MSLP), then re-score M-DIR / HYB72-M / HYB72-4DV-M
-- [ ] Initialization-shock run with mixed states (`isd_merra2_shock`: MX-SFC, MX-SFC-1F, MX-SFC-QM, MX-UA vs DIR-1F, M-DIR, M-QM)
+- [ ] Initialization-shock run with mixed states: push 96649f8+, `git pull` on Prism, rerun `isd_merra2_shock` (MX-SFC, MX-SFC-1F, MX-SFC-QM, MX-UA); the first attempt ran old code (§32.5.3)
 - [ ] Multi-date runs (4 winter, 4 summer): ERA5, M-QM, HYB72-MQM, E+DM24, HYB72-DIR, with month-specific climatologies
 - [ ] Small ensemble of mapped MERRA-2 starts (does averaging recover 48–72 h upper-air skill?)
 - [ ] Lead-dependent output calibration from 2011–2017 January GraphCast forecasts

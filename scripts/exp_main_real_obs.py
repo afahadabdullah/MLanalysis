@@ -1743,6 +1743,13 @@ if not args.skip_checks:
 if args.arms != "all":
     keep = {"ERA5", "BASE"} | {a.strip() for a in args.arms.split(",")}
     ARMS = {k: v for k, v in ARMS.items() if k in keep}
+    _missing = sorted(keep - set(ARMS))
+    if _missing:
+        print("\n" + "!" * 76)
+        print(f"   WARNING: requested arms were NOT built and will not run: {_missing}")
+        print("   (unknown name, code older than the arm (git pull?), or a missing input such as")
+        print("    --provider-file / --clim-era5 / --clim-provider / --long-nud)")
+        print("!" * 76 + "\n")
 print(f"   arms: {list(ARMS)}")
 print(f"\n[8] Running {len(ARMS)} forecasts x {args.steps} steps ...")
 FC, ROWS = {}, []
