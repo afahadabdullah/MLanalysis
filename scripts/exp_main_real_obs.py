@@ -1982,5 +1982,110 @@ for _ref in ("BASE", "ERA5"):
         cell = sub.assign(txt=sub.apply(lambda r: f"{r.d_pct:+5.1f} [{r.lo:+.1f},{r.hi:+.1f}]{'*' if r.sig else ' '}", axis=1))
         t = cell[cell.lead_h.isin(lsel)].pivot(index="arm", columns="lead_h", values="txt")
         print(t.loc[[a for a in ORDER if a in t.index]].to_string())
+
+# ---------------------------------------------------------------------------------------------
+# Two-truth verification (with --provider-file): does a forecast started from the foreign analysis
+# keep forecasting the foreign analysis, or does the ERA5-trained model pull it toward ERA5?
+# ---------------------------------------------------------------------------------------------
+if DSP is not None:
+    TERR = CONUS_LAND & (ZSFC > 1000.0 * G)
+    SPECS = [("t2m", "2m_temperature", None, CONUS_LAND, 1.0, "K"),
+             ("mslp", "mean_sea_level_pressure", None, CONUS_LAND, 100.0, "hPa"),
+             ("mslp_terrain", "mean_sea_level_pressure", None, TERR, 100.0, "hPa"),
+             ("t850", "temperature", L850, CONUS, 1.0, "K"),
+             ("z500", "geopotential", L500, DOWNSTREAM, G, "m")]
+
+    def _fld(fr, v, lev):
+        if v not in fr:
+            return None
+        return fr[v][lev] if lev is not None else fr[v]
+
+    def _wmean(x, m):
+        w = COSW * m
+        return float(np.sum(w * x) / np.sum(w))
+
+    TT = []
+    for name in ARMS:
+        for k in [-1] + list(range(len(LEADS))):
+            idx = I0 + 1 + k
+            f = ARMS[name][1] if k < 0 else pred_frame(FC[name], k)
+            fe = ARMS["ERA5"][1] if k < 0 else pred_frame(FC["ERA5"], k)
+            E_, M_ = era5_frame(idx), provider_frame(idx)
+            row = dict(arm=name, lead_h=0 if k < 0 else LEADS[k])
+            for key_, v, lev, msk, sc, _u in SPECS:
+                a, ae, e, m = _fld(f, v, lev), _fld(fe, v, lev), _fld(E_, v, lev), _fld(M_, v, lev)
+                if a is None or ae is None:
+                    continue
+                row[f"rmse_vsE_{key_}"] = wrms((a - e) / sc, msk)
+                row[f"rmse_vsM_{key_}"] = wrms((a - m) / sc, msk)
+                row[f"bias_vsE_{key_}"] = _wmean((a - e) / sc, msk)
+                row[f"bias_vsM_{key_}"] = _wmean((a - m) / sc, msk)
+                dme = m - e                                  # analysis difference at the valid time
+                den = np.sum(COSW * msk * dme ** 2)
+                row[f"retain_{key_}"] = float(np.sum(COSW * msk * (a - ae) * dme) / den) if den > 0 else np.nan
+            TT.append(row)
+    TT = pd.DataFrame(TT)
+    TT.to_csv(os.path.join(OUT, "two_truth_scores.csv"), index=False)
+    L2 = [0] + LSHOW
+
+    def _t2(col, fmt=2):
+        if col not in TT:
+            return "   (not available)"
+        t = TT[TT.lead_h.isin(L2)].pivot(index="arm", columns="lead_h", values=col)
+        return t.loc[[a for a in ORDER if a in t.index]].round(fmt).to_string()
+
+    print("\n" + "=" * 76)
+    print("TWO-TRUTH VERIFICATION: each forecast scored against ERA5 AND against the provider (MERRA-2)")
+    print("   lead 0 = the initial state at t0. Stations (above) stay the neutral truth.")
+    for key_, _v, _l, _m, _s, u in SPECS:
+        if f"rmse_vsE_{key_}" not in TT:
+            continue
+        lab = {"t2m": "2 m T, CONUS land", "mslp": "MSLP, CONUS land", "mslp_terrain": "MSLP, CONUS land > 1000 m",
+               "t850": "T850, CONUS", "z500": "Z500, downstream"}[key_]
+        print(f"\n{lab}: RMSE vs ERA5 ({u})")
+        print(_t2(f"rmse_vsE_{key_}", 3))
+        print(f"{lab}: RMSE vs MERRA-2 ({u})")
+        print(_t2(f"rmse_vsM_{key_}", 3))
+    print("\nSYSTEMATIC PART: area-mean bias of the forecast vs ERA5 | vs MERRA-2")
+    for key_ in ("t2m", "mslp_terrain"):
+        if f"bias_vsE_{key_}" in TT:
+            print(f"   {key_} vs ERA5"); print(_t2(f"bias_vsE_{key_}", 2))
+            print(f"   {key_} vs MERRA-2"); print(_t2(f"bias_vsM_{key_}", 2))
+    print("\nIDENTITY RETENTION r = <F_arm - F_ERA5, M - E> / |M - E|^2 at the valid time")
+    print("   1 = the forecast keeps the MERRA-2 minus ERA5 difference; 0 = it has become the ERA5-started forecast")
+    for key_ in ("t2m", "mslp", "mslp_terrain", "t850", "z500"):
+        if f"retain_{key_}" in TT:
+            print(f"   {key_}"); print(_t2(f"retain_{key_}", 2))
+    summ["two_truth"] = TT.to_dict(orient="records")
+    with open(os.path.join(OUT, "summary.json"), "w") as f:
+        json.dump(summ, f, indent=2, default=float)
+    try:
+        MARMS = [a for a in ORDER if a in ("ERA5", "BASE", "M-DIR") or a.endswith("-M")]
+        fig, axs = plt.subplots(1, 3, figsize=(16, 4.6))
+        for a in MARMS:
+            sub = TT[TT.arm == a].sort_values("lead_h")
+            kw = dict(color=COL.get(a, "k"), marker="o", ms=3)
+            axs[0].plot(sub.lead_h, sub.rmse_vsE_t2m, "-", label=f"{a} vs ERA5", **kw)
+            axs[0].plot(sub.lead_h, sub.rmse_vsM_t2m, ":", label=f"{a} vs MERRA-2", **kw)
+            if "rmse_vsE_z500" in sub:
+                axs[1].plot(sub.lead_h, sub.rmse_vsE_z500, "-", **kw)
+                axs[1].plot(sub.lead_h, sub.rmse_vsM_z500, ":", **kw)
+            if a != "ERA5":
+                for key_, ls in (("t2m", "-"), ("mslp_terrain", "--"), ("z500", ":")):
+                    if f"retain_{key_}" in sub:
+                        axs[2].plot(sub.lead_h, sub[f"retain_{key_}"], ls, color=COL.get(a, "k"),
+                                    label=f"{a} {key_}" if a == "M-DIR" else None)
+        axs[0].set_title("2 m T RMSE, CONUS land (solid vs ERA5, dotted vs MERRA-2)"); axs[0].set_ylabel("K")
+        axs[1].set_title("Z500 RMSE, downstream (solid vs ERA5, dotted vs MERRA-2)"); axs[1].set_ylabel("m")
+        axs[2].axhline(1, color="0.6", lw=0.8); axs[2].axhline(0, color="0.6", lw=0.8)
+        axs[2].set_title("Identity retention r (1 = keeps MERRA-2, 0 = became ERA5)")
+        for ax in axs:
+            ax.set_xlabel("lead (h)"); ax.grid(alpha=0.3)
+        axs[0].legend(fontsize=7, ncol=2); axs[2].legend(fontsize=7)
+        fig.tight_layout(); fig.savefig(os.path.join(OUT, "fig10_two_truth.png"), dpi=130); plt.close(fig)
+        print("   ✓ fig10_two_truth.png")
+    except Exception as ex:
+        print("   (fig10 skipped:", ex, ")")
+
 print("=" * 76)
 print(f"Outputs in {OUT}")
