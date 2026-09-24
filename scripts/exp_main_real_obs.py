@@ -30,6 +30,9 @@ VERIFICATION
 
 ARMS  ERA5 | BASE | BIAS | DIR-1F | DIR-2F | COL-2F | BAL-2F | REG-2F | COL/BAL-FIX | COL/BAL-PBL |
       IAU-<type> | NUD<window>-<type>   (see OPERATIONAL_DA_PLAN.md: M0-M5)
+      with --provider-file (a foreign analysis in GraphCast format, e.g. MERRA-2 from prep_merra2.py):
+      M-DIR  (forecast started directly from the provider at t0-6h/t0) |
+      REPLAY<H>-M / HYB<H>-M  (72 h cycling relaxed to the provider instead of ERA5, without / with stations)
   DIR = 2 m T only; COL = + column T from a regression of background error profiles
   on the 2 m error (training region outside CONUS); BAL = COL + hypsometric Z;
   REG = COL + regressed Z; 1F/2F = insert at t0 only / at t0-6h and t0;
@@ -41,6 +44,8 @@ DATA (login node):
   python scripts/download_isd_lite.py   --start 2018-01-14T00 --end 2018-01-19T00
   python scripts/download_uscrn_range.py --start 2018-01-14T00 --end 2018-01-19T00
   (MERRA-2: point --merra2-dir at local NCCS copies of MERRA2_*.inst1_2d_asm_Nx.*.nc4)
+  MERRA-2 as the provider analysis:  bash scripts/download_merra2.sh && python scripts/prep_merra2.py
+  then add  --provider-file data/merra2/source-merra2_date-2018-01-12_res-1.0_levels-13_steps-24.nc
 RUN (GPU node):
   source activate_env.sh
   python scripts/exp_main_real_obs.py --t0 2018-01-15T12:00 --obs-source isd
@@ -115,6 +120,9 @@ ap.add_argument("--sigma-repr", type=float, default=1.0, help="Station represent
 ap.add_argument("--pbl-dtheta", type=float, default=1.5, help="PBL top: first level with theta > theta_2m + this (K)")
 ap.add_argument("--pbl-frac", type=float, default=0.75, help="Spread increments up to this fraction of PBL depth [RAP]")
 ap.add_argument("--iau-kinds", default="DIR,BAL-PBL", help="Increment types for IAU-like arms (base bg only)")
+ap.add_argument("--provider-file", default=None,
+                help="Foreign analysis in the same GraphCast schema/times as --data (e.g. MERRA-2 from "
+                     "scripts/prep_merra2.py). Enables arms M-DIR, REPLAY<H>-M, HYB<H>-M.")
 ap.add_argument("--arms", default="all", help="Comma list of arms to forecast (ERA5 and BASE always kept)")
 ap.add_argument("--boot", type=int, default=1000, help="Bootstrap resamples over stations")
 ap.add_argument("--allow-no-elev", action="store_true", help="Keep stations with unknown elevation (no height correction)")
@@ -402,6 +410,22 @@ print(f"   state variables: {STATE_VARS}")
 
 def era5_frame(idx):
     return {v: DS[v].isel(time=idx).isel(batch=0).transpose(*REST[v]).values.astype(np.float32)
+            for v in STATE_VARS}
+
+
+DSP = None
+if args.provider_file:
+    DSP = xr.load_dataset(args.provider_file, decode_timedelta=True)
+    _pdt = DSP.coords["datetime"].values
+    _pdt = _pdt[0] if _pdt.ndim == 2 else _pdt
+    if len(_pdt) != len(DATETIMES) or not np.all(_pdt == DATETIMES):
+        raise SystemExit(f"--provider-file times {_pdt[0]}..{_pdt[-1]} ({len(_pdt)}) do not match --data "
+                         f"{DATETIMES[0]}..{DATETIMES[-1]} ({len(DATETIMES)}); rebuild it with prep_merra2.py --era5 <data>")
+    print(f"   provider analysis: {os.path.basename(args.provider_file)}  ({DSP.attrs.get('source', '')[:60]})")
+
+
+def provider_frame(idx):
+    return {v: DSP[v].isel(time=idx).isel(batch=0).transpose(*REST[v]).values.astype(np.float32)
             for v in STATE_VARS}
 
 
@@ -872,6 +896,8 @@ else:
     ARMS["BASE"] = ARMS["ERA5"]
 if want("DIR-1F"):
     ARMS["DIR-1F"] = (BASE_A, apply_increment(BASE_B, INC_B, "DIR"))
+if DSP is not None and want("M-DIR"):                  # foreign analysis used directly (no cycling)
+    ARMS["M-DIR"] = (provider_frame(I0 - 1), provider_frame(I0))
 for k in ("DIR", "COL", "BAL", "REG", "COL-FIX", "BAL-FIX", "COL-PBL", "BAL-PBL"):
     _nm = f"{k}-2F" if ("FIX" not in k and "PBL" not in k) else f"{k}"
     if want(_nm):
@@ -1014,7 +1040,7 @@ def hybrid_chain(kind, hours, a_era5, alpha_obs, weights="const", ls=False, bc=F
 BIAS_LOG = {}
 
 
-def long_nudge_chain(kind, alpha, hours, era5_alpha=0.0, tag=None):
+def long_nudge_chain(kind, alpha, hours, era5_alpha=0.0, tag=None, target=None):
     """Operational-style cycling: cold start from ERA5 at t0-(hours+6)h / t0-hours, then 6-hourly
     GraphCast steps up to t0. After every step:
       1. (hybrid) relax the FULL state - every variable, every level - toward ERA5 at that time
@@ -1023,13 +1049,16 @@ def long_nudge_chain(kind, alpha, hours, era5_alpha=0.0, tag=None):
     era5_alpha = 0, alpha > 0 : surface-only nudging (upper air free to drift)
     era5_alpha > 0, alpha = 0 : reanalysis replay only (no own observations)
     both > 0                  : hybrid = reanalysis replay + own surface observations
-    both = 0                  : free-running control"""
+    both = 0                  : free-running control
+    target: frame function of the analysis to start from and relax to (default ERA5; provider_frame
+    for a foreign analysis such as MERRA-2)."""
+    target = target or era5_frame
     n = hours // 6
-    A, B = era5_frame(I0 - n - 1), era5_frame(I0 - n)
+    A, B = target(I0 - n - 1), target(I0 - n)
     for idx in range(I0 - n + 1, I0 + 1):
         C = pred_frame(forecast(A, B, idx - 2, 1), 0)
         if era5_alpha > 0:
-            E = era5_frame(idx)
+            E = target(idx)
             C = {v: (C[v] + era5_alpha * (E[v] - C[v])).astype(np.float32) for v in STATE_VARS}
         if alpha > 0:
             C = apply_increment(C, oi_increment(C["2m_temperature"], idx, tag or f"nud{hours}-{kind}"),
@@ -1061,6 +1090,15 @@ if args.long_nud:
                     ARMS[f"HYB{H}-{k}"] = long_nudge_chain(k, ALPHA, H, era5_alpha=A_E, tag=f"hyb{H}-{k}")
             print(f"   hybrid cycling {H} h: full state relaxed to ERA5 (alpha_ERA5={A_E:.2f}, tau={args.hyb_tau} h) "
                   f"+ stations (alpha={ALPHA:.2f}); REPLAY{H} control: {time.time()-t_:.1f} s")
+            if DSP is not None and (want(f"REPLAY{H}-M") or want(f"HYB{H}-M")):
+                t_ = time.time()
+                if want(f"REPLAY{H}-M"):
+                    ARMS[f"REPLAY{H}-M"] = long_nudge_chain("DIR", 0.0, H, era5_alpha=A_E, target=provider_frame)
+                if want(f"HYB{H}-M"):
+                    ARMS[f"HYB{H}-M"] = long_nudge_chain("DIR", ALPHA, H, era5_alpha=A_E, tag=f"hyb{H}-m",
+                                                         target=provider_frame)
+                print(f"   provider cycling {H} h: full state relaxed to the provider analysis (alpha={A_E:.2f}); "
+                      f"REPLAY{H}-M / HYB{H}-M (+ stations): {time.time()-t_:.1f} s")
 
 WINDOWS = [int(w.strip()) for w in args.nud_windows.split(",") if w.strip()]
 for w in WINDOWS:
@@ -1702,8 +1740,10 @@ COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d6
        "REPLAY72": "#08519c", "HYB72-DIR": "#e6550d", "HYB72-BAL-PBL": "#a63603", "HYB72-BAL": "#fd8d3c",
        "JAC-2F": "#6a3d9a", "4DV": "#b15928", "HYB72-JAC": "#cab2d6", "HYB72-4DV": "#000000",
        "HYB72-DIR-LS": "#fdae6b", "HYB72-DIR-BC": "#fd8d3c", "HYB72-DIR-LS+BC": "#d94801",
-       "HYB72-DIR-Wramp-up": "#fdd0a2", "HYB72-DIR-Wramp-down": "#e6550d", "HYB72-DIR-Wtri": "#f16913"}
-STY = {"ERA5": "--", "BASE": "--", "FREE72": ":", "FREE48": ":", "FREE120": ":", "REPLAY72": "-."}
+       "HYB72-DIR-Wramp-up": "#fdd0a2", "HYB72-DIR-Wramp-down": "#e6550d", "HYB72-DIR-Wtri": "#f16913",
+       "M-DIR": "#e7298a", "REPLAY72-M": "#66a61e", "HYB72-M": "#1b9e77"}
+STY = {"ERA5": "--", "BASE": "--", "FREE72": ":", "FREE48": ":", "FREE120": ":", "REPLAY72": "-.", "REPLAY72-M": "-.",
+       "M-DIR": "--"}
 EXT = [230, 300, 20, 55]
 
 
