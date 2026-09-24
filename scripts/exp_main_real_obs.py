@@ -32,7 +32,10 @@ ARMS  ERA5 | BASE | BIAS | DIR-1F | DIR-2F | COL-2F | BAL-2F | REG-2F | COL/BAL-
       IAU-<type> | NUD<window>-<type>   (see OPERATIONAL_DA_PLAN.md: M0-M5)
       with --provider-file (a foreign analysis in GraphCast format, e.g. MERRA-2 from prep_merra2.py):
       M-DIR  (forecast started directly from the provider at t0-6h/t0) |
-      REPLAY<H>-M / HYB<H>-M  (72 h cycling relaxed to the provider instead of ERA5, without / with stations)
+      REPLAY<H>-M / HYB<H>-M  (72 h cycling relaxed to the provider instead of ERA5, without / with stations) |
+      HYB<H>-4DV-M (4D-Var on the provider-cycled background);
+      with --clim-era5/--clim-provider (anomaly initialization, no retraining):
+      M-MEAN (M - (clim_M - clim_E)) | M-QM (clim_E + (M - clim_M) std_E/std_M) | REPLAY<H>-MQM | HYB<H>-MQM | HYB<H>-4DV-MQM
   DIR = 2 m T only; COL = + column T from a regression of background error profiles
   on the 2 m error (training region outside CONUS); BAL = COL + hypsometric Z;
   REG = COL + regressed Z; 1F/2F = insert at t0 only / at t0-6h and t0;
@@ -123,6 +126,11 @@ ap.add_argument("--iau-kinds", default="DIR,BAL-PBL", help="Increment types for 
 ap.add_argument("--provider-file", default=None,
                 help="Foreign analysis in the same GraphCast schema/times as --data (e.g. MERRA-2 from "
                      "scripts/prep_merra2.py). Enables arms M-DIR, REPLAY<H>-M, HYB<H>-M.")
+ap.add_argument("--clim-era5", default=None, help="ERA5 hour-of-day climatology (scripts/build_clim.py --source era5)")
+ap.add_argument("--clim-provider", default=None,
+                help="Provider (MERRA-2) climatology (build_clim.py --source merra2). With --clim-era5 enables the "
+                     "anomaly-initialization arms M-MEAN, M-QM, REPLAY<H>-MQM, HYB<H>-MQM, HYB<H>-4DV-MQM")
+ap.add_argument("--qm-ratio-clip", default="0.5,2.0", help="M-QM: clip of std_E/std_M")
 ap.add_argument("--arms", default="all", help="Comma list of arms to forecast (ERA5 and BASE always kept)")
 ap.add_argument("--boot", type=int, default=1000, help="Bootstrap resamples over stations")
 ap.add_argument("--allow-no-elev", action="store_true", help="Keep stations with unknown elevation (no height correction)")
@@ -427,6 +435,47 @@ if args.provider_file:
 def provider_frame(idx):
     return {v: DSP[v].isel(time=idx).isel(batch=0).transpose(*REST[v]).values.astype(np.float32)
             for v in STATE_VARS}
+
+
+CLIM_E = CLIM_M = None
+if DSP is not None and args.clim_era5 and args.clim_provider:
+    CLIM_E, CLIM_M = xr.load_dataset(args.clim_era5), xr.load_dataset(args.clim_provider)
+    for _c in (CLIM_E, CLIM_M):
+        if not (np.allclose(_c["lat"].values, LATS) and np.allclose(_c["lon"].values, LONS)
+                and [int(x) for x in _c["level"].values] == LEVELS):
+            raise SystemExit("climatology grid/levels do not match the input file")
+    _need_h = sorted({pd.Timestamp(d).hour for d in DATETIMES})
+    for _c in (CLIM_E, CLIM_M):
+        _miss = [h for h in _need_h if h not in set(int(x) for x in _c["hour"].values)]
+        if _miss:
+            raise SystemExit(f"climatology lacks hours {_miss}")
+    QM_LO, QM_HI = [float(x) for x in args.qm_ratio_clip.split(",")]
+    print(f"   anomaly initialization: clim ERA5 {CLIM_E.attrs.get('years')} ({CLIM_E.attrs.get('n_days')} d), "
+          f"clim provider {CLIM_M.attrs.get('years')} ({CLIM_M.attrs.get('n_days')} d)")
+
+
+def _climv(ds, v, h, kind):
+    return ds[f"{v}_{kind}"].sel(hour=h).transpose(*REST[v]).values.astype(np.float64)
+
+
+def mapped_frame(idx, mode="QM"):
+    """Provider state mapped to ERA5's climate (anomaly initialization). mode MEAN or QM."""
+    M = provider_frame(idx)
+    h = pd.Timestamp(DATETIMES[idx]).hour
+    out = {}
+    for v in STATE_VARS:
+        x = M[v].astype(np.float64)
+        mE, mM = _climv(CLIM_E, v, h, "mean"), _climv(CLIM_M, v, h, "mean")
+        if mode == "MEAN" or v == "total_precipitation_6hr":
+            y = x - (mM - mE)
+        else:
+            sE, sM = _climv(CLIM_E, v, h, "std"), _climv(CLIM_M, v, h, "std")
+            r = np.where(sM > 1e-12, sE / np.maximum(sM, 1e-12), 1.0)
+            y = mE + (x - mM) * np.clip(r, QM_LO, QM_HI)
+        if v in ("total_precipitation_6hr", "specific_humidity"):
+            y = np.clip(y, 0.0, None)
+        out[v] = y.astype(np.float32)
+    return out
 
 
 class _Lev:
@@ -898,6 +947,10 @@ if want("DIR-1F"):
     ARMS["DIR-1F"] = (BASE_A, apply_increment(BASE_B, INC_B, "DIR"))
 if DSP is not None and want("M-DIR"):                  # foreign analysis used directly (no cycling)
     ARMS["M-DIR"] = (provider_frame(I0 - 1), provider_frame(I0))
+if CLIM_E is not None:
+    for _mode in ("MEAN", "QM"):
+        if want(f"M-{_mode}"):
+            ARMS[f"M-{_mode}"] = (mapped_frame(I0 - 1, _mode), mapped_frame(I0, _mode))
 for k in ("DIR", "COL", "BAL", "REG", "COL-FIX", "BAL-FIX", "COL-PBL", "BAL-PBL"):
     _nm = f"{k}-2F" if ("FIX" not in k and "PBL" not in k) else f"{k}"
     if want(_nm):
@@ -1013,7 +1066,7 @@ def relax_to_era5(C, E, a_upper, a_sfc=None):
 
 
 def hybrid_chain(kind, hours, a_era5, alpha_obs, weights="const", ls=False, bc=False,
-                 end_idx=None, last_obs=True, tag=None):
+                 end_idx=None, last_obs=True, tag=None, target=None):
     """Generalized hybrid cycling (see long_nudge_chain) with weighted-4DIAU cycle weights,
     level-selective replay (ls) and station bias correction (bc). Runs from t0-(hours+6)h up to
     frame end_idx (default t0). last_obs=False skips the station increment at end_idx."""
@@ -1022,11 +1075,12 @@ def hybrid_chain(kind, hours, a_era5, alpha_obs, weights="const", ls=False, bc=F
     w = iau_weights(weights, n)
     a_sfc = (1.0 - np.exp(-6.0 / args.hyb_sfc_tau)) if ls else None
     bias = {} if bc else None
-    A, B = era5_frame(I0 - n - 1), era5_frame(I0 - n)
+    target = target or era5_frame
+    A, B = target(I0 - n - 1), target(I0 - n)
     for j, idx in enumerate(range(I0 - n + 1, end_idx + 1)):
         C = pred_frame(forecast(A, B, idx - 2, 1), 0)
         if a_era5 > 0:
-            C = relax_to_era5(C, era5_frame(idx), w[j] * a_era5, None if a_sfc is None else w[j] * a_sfc)
+            C = relax_to_era5(C, target(idx), w[j] * a_era5, None if a_sfc is None else w[j] * a_sfc)
         if alpha_obs > 0 and (last_obs or idx != end_idx):
             C = apply_increment(C, oi_increment(C["2m_temperature"], idx, tag or f"hyb-{kind}", bias=bias),
                                 kind, scale=w[j] * alpha_obs)
@@ -1090,13 +1144,19 @@ if args.long_nud:
                     ARMS[f"HYB{H}-{k}"] = long_nudge_chain(k, ALPHA, H, era5_alpha=A_E, tag=f"hyb{H}-{k}")
             print(f"   hybrid cycling {H} h: full state relaxed to ERA5 (alpha_ERA5={A_E:.2f}, tau={args.hyb_tau} h) "
                   f"+ stations (alpha={ALPHA:.2f}); REPLAY{H} control: {time.time()-t_:.1f} s")
-            if DSP is not None and (want(f"REPLAY{H}-M") or want(f"HYB{H}-M")):
+            if DSP is not None and any(want(f"{a}{H}-{b}") for a in ("REPLAY", "HYB") for b in ("M", "MQM")):
                 t_ = time.time()
                 if want(f"REPLAY{H}-M"):
                     ARMS[f"REPLAY{H}-M"] = long_nudge_chain("DIR", 0.0, H, era5_alpha=A_E, target=provider_frame)
                 if want(f"HYB{H}-M"):
                     ARMS[f"HYB{H}-M"] = long_nudge_chain("DIR", ALPHA, H, era5_alpha=A_E, tag=f"hyb{H}-m",
                                                          target=provider_frame)
+                if CLIM_E is not None and want(f"REPLAY{H}-MQM"):
+                    ARMS[f"REPLAY{H}-MQM"] = long_nudge_chain("DIR", 0.0, H, era5_alpha=A_E,
+                                                              target=lambda i: mapped_frame(i, "QM"))
+                if CLIM_E is not None and want(f"HYB{H}-MQM"):
+                    ARMS[f"HYB{H}-MQM"] = long_nudge_chain("DIR", ALPHA, H, era5_alpha=A_E, tag=f"hyb{H}-mqm",
+                                                           target=lambda i: mapped_frame(i, "QM"))
                 print(f"   provider cycling {H} h: full state relaxed to the provider analysis (alpha={A_E:.2f}); "
                       f"REPLAY{H}-M / HYB{H}-M (+ stations): {time.time()-t_:.1f} s")
 
@@ -1301,7 +1361,7 @@ if _need_jac or _need_4dv:
         return ((1 - wi) * (1 - wj) * f[i0, j0] + (1 - wi) * wj * f[i0, j1]
                 + wi * (1 - wj) * f[i0 + 1, j0] + wi * wj * f[i0 + 1, j1])
 
-    def fourdvar(Ab, Bb, start, era5_anchor=False, tag="4dv", relax_t0=None):
+    def fourdvar(Ab, Bb, start, era5_anchor=False, tag="4dv", relax_t0=None, target=None):
         """Strong-constraint two-frame 4D-Var over the window [t0-12h, t0].
         Control: increments to (x_{-12}, x_{-6}) for 2 m T and T, q, u, v, Z at levels >= --col-top,
         in B^1/2 space (Gaussian correlation L=--fdv-L, std --fdv-sig), over the OI box.
@@ -1327,7 +1387,8 @@ if _need_jac or _need_4dv:
             shapes.append((2,) + ((len(lev),) if lev else ()) + (R1 - R0, C1 - C0))
         sizes = [int(np.prod(sh)) for sh in shapes]
         mask_box = jnp.asarray(OI_BOX[R0:R1, C0:C1], jnp.float32)
-        E0 = _jnp(era5_frame(start + 2)) if era5_anchor else None
+        target = target or era5_frame
+        E0 = _jnp(target(start + 2)) if era5_anchor else None
 
         def unpack(z):
             out, o = [], 0
@@ -1516,7 +1577,7 @@ if _need_jac or _need_4dv:
         C_a = pred_frame(forecast(A_a, B_a, start, 1), 0)      # launch pair with the operational forward
         if relax_t0 is not None:                                 # HYB-4DV: same t0 anchoring as HYB-DIR
             C_bf = pred_frame(forecast(Ab, Bb, start, 1), 0)
-            C_r = relax_to_era5(C_bf, era5_frame(start + 2), relax_t0)
+            C_r = relax_to_era5(C_bf, target(start + 2), relax_t0)
             C_a = {v: (C_r[v] + (C_a[v] - C_bf[v])).astype(np.float32) for v in STATE_VARS}
             FDV_LOG[tag]["t0_relaxed"] = True
         return B_a, C_a
@@ -1539,6 +1600,18 @@ if _need_jac or _need_4dv:
             Ab, Bb = hybrid_chain("DIR", H_, A_E, ALPHA, end_idx=I0 - 1, last_obs=False, tag=f"hyb{H_}-4dvbg")
             ARMS[f"HYB{H_}-4DV"] = fourdvar(Ab, Bb, I0 - 2, era5_anchor=True, tag=f"HYB{H_}-4DV",
                                             relax_t0=A_E if args.fdv_relax_t0 else None)
+        _prov_4dv = []
+        if DSP is not None:
+            _prov_4dv.append(("M", provider_frame))
+        if CLIM_E is not None:
+            _prov_4dv.append(("MQM", lambda i: mapped_frame(i, "QM")))
+        for _suf, _tgt in _prov_4dv:
+            if H_ and want(f"HYB{H_}-4DV-{_suf}") and args.hyb_tau > 0:
+                A_E = 1.0 - np.exp(-6.0 / args.hyb_tau)
+                Ab, Bb = hybrid_chain("DIR", H_, A_E, ALPHA, end_idx=I0 - 1, last_obs=False,
+                                      tag=f"hyb{H_}-4dvbg-{_suf.lower()}", target=_tgt)
+                ARMS[f"HYB{H_}-4DV-{_suf}"] = fourdvar(Ab, Bb, I0 - 2, era5_anchor=True, tag=f"HYB{H_}-4DV-{_suf}",
+                                                      relax_t0=A_E if args.fdv_relax_t0 else None, target=_tgt)
 
 # hybrid-cycle variants (weighted 4DIAU, level-selective replay, bias correction; any station kind incl. JAC)
 if H_ and args.base == "bg" and M2FIELD is None and args.hyb_tau > 0:
@@ -1741,7 +1814,9 @@ COL = {"ERA5": "#222222", "BASE": "#9a9a9a", "DIR-1F": "#f4a3a3", "DIR-2F": "#d6
        "JAC-2F": "#6a3d9a", "4DV": "#b15928", "HYB72-JAC": "#cab2d6", "HYB72-4DV": "#000000",
        "HYB72-DIR-LS": "#fdae6b", "HYB72-DIR-BC": "#fd8d3c", "HYB72-DIR-LS+BC": "#d94801",
        "HYB72-DIR-Wramp-up": "#fdd0a2", "HYB72-DIR-Wramp-down": "#e6550d", "HYB72-DIR-Wtri": "#f16913",
-       "M-DIR": "#e7298a", "REPLAY72-M": "#66a61e", "HYB72-M": "#1b9e77"}
+       "M-DIR": "#e7298a", "REPLAY72-M": "#66a61e", "HYB72-M": "#1b9e77",
+       "M-MEAN": "#fb9a99", "M-QM": "#e31a1c", "REPLAY72-MQM": "#b2df8a", "HYB72-MQM": "#33a02c",
+       "HYB72-4DV-M": "#6a51a3", "HYB72-4DV-MQM": "#3f007d"}
 STY = {"ERA5": "--", "BASE": "--", "FREE72": ":", "FREE48": ":", "FREE120": ":", "REPLAY72": "-.", "REPLAY72-M": "-.",
        "M-DIR": "--"}
 EXT = [230, 300, 20, 55]
@@ -2060,7 +2135,7 @@ if DSP is not None:
     with open(os.path.join(OUT, "summary.json"), "w") as f:
         json.dump(summ, f, indent=2, default=float)
     try:
-        MARMS = [a for a in ORDER if a in ("ERA5", "BASE", "M-DIR") or a.endswith("-M")]
+        MARMS = [a for a in ORDER if a in ("ERA5", "BASE") or a.startswith("M-") or a.endswith("-M") or a.endswith("-MQM")]
         fig, axs = plt.subplots(1, 3, figsize=(16, 4.6))
         for a in MARMS:
             sub = TT[TT.arm == a].sort_values("lead_h")
